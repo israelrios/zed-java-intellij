@@ -1,6 +1,4 @@
-use percent_encoding::utf8_percent_encode;
-use regex::Regex;
-use serde::{Deserialize, Serialize, Serializer};
+use serde::{Deserialize, Serialize};
 use std::{
     env::current_dir,
     fs::{self, OpenOptions},
@@ -9,10 +7,8 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 use zed_extension_api::{
-    self as zed, Architecture, Command, DownloadedFileType, LanguageServerId, Os, Worktree,
-    current_platform,
-    http_client::{HttpMethod, HttpRequest, fetch},
-    serde_json::Value,
+    self as zed, Architecture, DownloadedFileType, LanguageServerId, Os, Worktree,
+    current_platform, serde_json::Value,
 };
 
 use crate::{
@@ -28,12 +24,7 @@ const DIR_ENTRY_RM_ERROR: &str = "Failed to remove directory entry";
 const ENTRY_TYPE_ERROR: &str = "Could not determine entry type";
 const FILE_ENTRY_RM_ERROR: &str = "Failed to remove file entry";
 const PATH_TO_STR_ERROR: &str = "Failed to convert path to string";
-const JAVA_EXEC_ERROR: &str = "Failed to convert Java executable path to string";
-const JAVA_VERSION_ERROR: &str = "Failed to determine Java major version";
 const JAVA_EXEC_NOT_FOUND_ERROR: &str = "Could not find Java executable in JAVA_HOME or on PATH";
-const TAG_RETRIEVAL_ERROR: &str = "Failed to fetch GitHub tags";
-const TAG_RESPONSE_ERROR: &str = "Failed to deserialize GitHub tags response";
-const TAG_UNEXPECTED_FORMAT_ERROR: &str = "Malformed GitHub tags response";
 const PATH_IS_NOT_DIR: &str = "File exists but is not a path";
 const NO_LOCAL_INSTALL_NEVER_ERROR: &str =
     "Update checks disabled (never) and no local installation found";
@@ -285,23 +276,16 @@ pub fn get_java_exec_name() -> String {
 /// `bin/<version>/`; root-level binaries are local development overrides.
 pub const NATIVE_BIN_DIR: &str = "bin";
 
-/// Return the release tag corresponding to the extension package version.
-pub fn extension_release_version() -> String {
-    format!("v{}", env!("CARGO_PKG_VERSION"))
-}
-
-/// Find a native development override or the binary matching the current extension release.
-pub fn find_native_binary(executable: &str) -> Option<PathBuf> {
-    find_native_binary_in(Path::new(NATIVE_BIN_DIR), executable)
+/// Find a native development override or the binary from the given release.
+pub fn find_native_binary_in_release(executable: &str, release: &str) -> Option<PathBuf> {
+    find_native_binary_in(Path::new(NATIVE_BIN_DIR), executable, release)
 }
 
 /// Resolve a native binary within an explicit install directory for filesystem tests.
-fn find_native_binary_in(install_dir: &Path, executable: &str) -> Option<PathBuf> {
+fn find_native_binary_in(install_dir: &Path, executable: &str, release: &str) -> Option<PathBuf> {
     let preferred_paths = [
         install_dir.join(executable),
-        install_dir
-            .join(extension_release_version())
-            .join(executable),
+        install_dir.join(release).join(executable),
     ];
     if let Some(path) = preferred_paths
         .into_iter()
@@ -323,8 +307,8 @@ pub fn platform_exec_name(binary: &str) -> String {
 }
 
 /// The release-asset name and archive type for a downloaded native binary on the
-/// current platform, e.g. `java-lsp-proxy-darwin-aarch64.tar.gz`. The proxy and
-/// the bridge ship per-platform assets under the same release with this naming;
+/// current platform, e.g. `gradle-lsp-bridge-darwin-aarch64.tar.gz`. Upstream ships
+/// per-platform bridge assets under each release with this naming;
 /// only `binary` differs.
 ///
 /// # Errors
@@ -350,118 +334,6 @@ pub fn platform_asset_name(binary: &str) -> zed::Result<(String, DownloadedFileT
     Ok((format!("{binary}-{os_str}-{arch_str}.{ext}"), file_type))
 }
 
-/// Retrieve the java major version accessible by the extension
-///
-/// # Arguments
-///
-/// * [`java_executable`] the path to a java exec file
-///
-/// # Returns
-///
-/// Returns the java major version
-///
-/// # Errors
-///
-/// This function will return an error if:
-///
-/// * [`java_executable`] can't be converted into a String
-/// * No major version can be determined
-pub fn get_java_major_version(java_executable: &PathBuf) -> zed::Result<u32> {
-    let program = path_to_string(java_executable)
-        .map_err(|err| format!("{JAVA_EXEC_ERROR} '{java_executable:?}': {err}"))?;
-    let output_bytes = Command::new(&program)
-        .arg("-version")
-        .output()
-        .map_err(|err| format!("Failed to execute '{program} -version': {err}"))?
-        .stderr;
-    let output = String::from_utf8(output_bytes)
-        .map_err(|err| format!("Invalid UTF-8 in java version output: {err}"))?;
-
-    let major_version_regex = Regex::new(r#"version\s"(?P<major>\d+)(\.\d+\.\d+(_\d+)?)?"#)
-        .map_err(|err| format!("Invalid regex for Java version parsing: {err}"))?;
-    let major_version = major_version_regex
-        .captures_iter(&output)
-        .find_map(|c| c.name("major").and_then(|m| m.as_str().parse::<u32>().ok()));
-
-    if let Some(major_version) = major_version {
-        Ok(major_version)
-    } else {
-        Err(JAVA_VERSION_ERROR.to_string())
-    }
-}
-
-/// Retrieve the latest and second latest versions from the repo tags
-///
-/// # Arguments
-///
-/// * [`repo`] The GitHub repository from which to retrieve the tags
-///
-/// # Returns
-///
-/// A tuple containing the latest version, and optionally, the second latest version if available
-///
-/// # Errors
-///
-/// This function will return an error if:
-/// * Could not fetch tags from Github
-/// * Failed to deserialize response
-/// * Unexpected Github response format
-pub fn get_latest_versions_from_tag(
-    repo: &str,
-    worktree: &Worktree,
-) -> zed::Result<(String, Option<String>)> {
-    let mut request = HttpRequest::builder()
-        .method(HttpMethod::Get)
-        .url(format!("https://api.github.com/repos/{repo}/tags"));
-
-    // Use GITHUB_TOKEN or GH_TOKEN environment variable if available
-    // to avoid GitHub API rate limiting (60 req/hr unauthenticated vs 5000/hr authenticated).
-    if let Some(token) = github_token(&worktree.shell_env()) {
-        request = request.header("Authorization", format!("token {token}"));
-    }
-
-    let request = request
-        .build()
-        .map_err(|err| format!("{TAG_RETRIEVAL_ERROR}: {err}"))?;
-
-    let tags_response_body = serde_json::from_slice::<Value>(
-        &fetch(&request)
-            .map_err(|err| format!("{TAG_RETRIEVAL_ERROR}: {err}"))?
-            .body,
-    )
-    .map_err(|err| format!("{TAG_RESPONSE_ERROR}: {err}"))?;
-
-    let latest_version = get_tag_at(&tags_response_body, 0);
-    let second_version = get_tag_at(&tags_response_body, 1);
-
-    let latest_version = latest_version.ok_or_else(|| TAG_UNEXPECTED_FORMAT_ERROR.to_string())?;
-
-    Ok((
-        latest_version.to_string(),
-        second_version.map(|second| second.to_string()),
-    ))
-}
-
-fn github_token(shell_env: &[(String, String)]) -> Option<&str> {
-    ["GITHUB_TOKEN", "GH_TOKEN"].into_iter().find_map(|name| {
-        shell_env
-            .iter()
-            .find(|(key, value)| key == name && !value.is_empty())
-            .map(|(_, value)| value.as_str())
-    })
-}
-
-fn get_tag_at(github_tags: &Value, index: usize) -> Option<&str> {
-    github_tags.as_array().and_then(|tag| {
-        tag.get(index).and_then(|latest_tag| {
-            latest_tag
-                .get("name")
-                .and_then(|tag_name| tag_name.as_str())
-                .map(|val| &val[1..])
-        })
-    })
-}
-
 /// Converts a [`Path`] into a [`String`].
 ///
 /// # Arguments
@@ -481,42 +353,6 @@ pub fn path_to_string<P: AsRef<Path>>(path: P) -> zed::Result<String> {
         .into_os_string()
         .into_string()
         .map_err(|_| PATH_TO_STR_ERROR.to_string())
-}
-
-/// Characters to percent-encode in the path component of a file:// URI.
-/// Encodes everything except characters that are valid unencoded in URI paths per RFC 3986.
-const PATH_ENCODE_SET: percent_encoding::AsciiSet = percent_encoding::NON_ALPHANUMERIC
-    .remove(b'/')
-    .remove(b':')
-    .remove(b'-')
-    .remove(b'.')
-    .remove(b'_')
-    .remove(b'~')
-    .remove(b'@');
-
-/// Converts a filesystem path to a `file://` URI with proper percent-encoding.
-///
-/// Handles both Unix (`/home/user/project`) and Windows (`C:\Users\user\project`) paths.
-///
-/// # Arguments
-///
-/// * `path` - The filesystem path to convert.
-///
-/// # Returns
-///
-/// A properly encoded `file://` URI string.
-pub fn path_to_file_uri(path: &str) -> String {
-    let mut uri = String::with_capacity(path.len() + 8);
-    uri.push_str("file://");
-    if path.starts_with('/') {
-        uri.extend(utf8_percent_encode(path, &PATH_ENCODE_SET));
-    } else {
-        for chunk in path.split('\\') {
-            uri.push('/');
-            uri.extend(utf8_percent_encode(chunk, &PATH_ENCODE_SET));
-        }
-    }
-    uri
 }
 
 /// Remove all files or directories that aren't equal to [`filename`].
@@ -591,7 +427,7 @@ pub fn remove_all_directories_except<P: AsRef<Path>>(
 /// # Arguments
 /// * `configuration` - User configuration JSON
 /// * `local` - Optional path to local installation
-/// * `component_name` - Component name for error messages (e.g., "jdtls", "lombok", "debugger")
+/// * `component_name` - Component name for error messages (e.g., "intellij-server", "gradle-ls")
 /// * `update_check_path` - Component-specific update-check record
 ///
 /// # Returns
@@ -635,41 +471,6 @@ pub fn should_use_local_or_download(
     }
 }
 
-/// A type that can be deserialized from either a single string or a list of strings.
-///
-/// When serialized, it always produces a single string. If it was a list,
-/// the elements are joined with a space, quoting elements that contain spaces.
-#[derive(Deserialize, Debug, Clone)]
-#[serde(untagged)]
-pub enum ArgsStringOrList {
-    String(String),
-    List(Vec<String>),
-}
-
-impl Serialize for ArgsStringOrList {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        match self {
-            ArgsStringOrList::String(s) => serializer.serialize_str(s),
-            ArgsStringOrList::List(l) => {
-                let quoted: Vec<String> = l
-                    .iter()
-                    .map(|s| {
-                        if s.contains(' ') {
-                            format!("\"{s}\"")
-                        } else {
-                            s.clone()
-                        }
-                    })
-                    .collect();
-                serializer.serialize_str(&quoted.join(" "))
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::{
@@ -682,11 +483,6 @@ mod tests {
     use super::*;
 
     static NEXT_TEMP_PATH: AtomicU64 = AtomicU64::new(0);
-
-    #[derive(Deserialize, Serialize)]
-    struct ArgsWrapper {
-        args: ArgsStringOrList,
-    }
 
     fn temporary_update_check_path(test_name: &str) -> PathBuf {
         let id = NEXT_TEMP_PATH.fetch_add(1, Ordering::Relaxed);
@@ -841,7 +637,7 @@ mod tests {
     }
 
     #[test]
-    fn native_binary_discovery_ignores_other_extension_versions() {
+    fn native_binary_discovery_ignores_other_releases() {
         let root = temporary_update_check_path("native-binary")
             .parent()
             .unwrap()
@@ -850,12 +646,12 @@ mod tests {
         create_path_if_not_exists(old_binary.parent().unwrap()).unwrap();
         fs::write(&old_binary, "").unwrap();
 
-        assert_eq!(find_native_binary_in(&root, "test-binary"), None);
+        assert_eq!(find_native_binary_in(&root, "test-binary", "v2.0.0"), None);
 
-        let current_binary = root.join(extension_release_version()).join("test-binary");
+        let current_binary = root.join("v2.0.0").join("test-binary");
         create_path_if_not_exists(&current_binary).unwrap();
         assert_eq!(
-            find_native_binary_in(&root, "test-binary"),
+            find_native_binary_in(&root, "test-binary", "v2.0.0"),
             None,
             "a directory at the binary path must not be accepted"
         );
@@ -863,14 +659,14 @@ mod tests {
         create_path_if_not_exists(current_binary.parent().unwrap()).unwrap();
         fs::write(&current_binary, "").unwrap();
         assert_eq!(
-            find_native_binary_in(&root, "test-binary"),
+            find_native_binary_in(&root, "test-binary", "v2.0.0"),
             Some(current_binary)
         );
 
         let development_binary = root.join("test-binary");
         fs::write(&development_binary, "").unwrap();
         assert_eq!(
-            find_native_binary_in(&root, "test-binary"),
+            find_native_binary_in(&root, "test-binary", "v2.0.0"),
             Some(development_binary)
         );
         let _ = fs::remove_dir_all(root);
@@ -882,121 +678,18 @@ mod tests {
             .parent()
             .unwrap()
             .to_path_buf();
-        let current_dir = root.join(extension_release_version());
+        let current_dir = root.join("v2.0.0");
         let old_dir = root.join("v1.0.0");
         let development_binary = root.join("test-binary");
         create_path_if_not_exists(&current_dir).unwrap();
         create_path_if_not_exists(&old_dir).unwrap();
         fs::write(&development_binary, "").unwrap();
 
-        remove_all_directories_except(&root, &extension_release_version()).unwrap();
+        remove_all_directories_except(&root, "v2.0.0").unwrap();
 
         assert!(current_dir.is_dir());
         assert!(!old_dir.exists());
         assert!(development_binary.is_file());
         let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn github_token_prefers_github_token() {
-        let env = vec![
-            ("GH_TOKEN".to_string(), "gh".to_string()),
-            ("GITHUB_TOKEN".to_string(), "github".to_string()),
-        ];
-
-        assert_eq!(github_token(&env), Some("github"));
-    }
-
-    #[test]
-    fn github_token_falls_back_to_gh_token() {
-        let env = vec![
-            ("GITHUB_TOKEN".to_string(), String::new()),
-            ("GH_TOKEN".to_string(), "gh".to_string()),
-        ];
-
-        assert_eq!(github_token(&env), Some("gh"));
-    }
-
-    #[test]
-    fn github_token_ignores_missing_and_empty_tokens() {
-        let env = vec![("GITHUB_TOKEN".to_string(), String::new())];
-
-        assert_eq!(github_token(&env), None);
-    }
-
-    #[test]
-    fn test_args_list_with_spaces_quotes_elements() {
-        let json = std::fs::read_to_string("testdata/args_with_spaces.json").unwrap();
-        let wrapper: ArgsWrapper = serde_json::from_str(&json).unwrap();
-        let serialized = serde_json::to_value(&wrapper).unwrap();
-        assert_eq!(
-            serialized["args"],
-            r#""C:\path with spaces\some file.txt" arg2"#
-        );
-    }
-
-    #[test]
-    fn test_args_single_string_preserved_as_is() {
-        let json = std::fs::read_to_string("testdata/args_single_string.json").unwrap();
-        let wrapper: ArgsWrapper = serde_json::from_str(&json).unwrap();
-        let serialized = serde_json::to_value(&wrapper).unwrap();
-        assert_eq!(serialized["args"], r#"C:\path with spaces\some file.txt"#);
-    }
-
-    #[test]
-    fn test_args_list_no_spaces_not_quoted() {
-        let json = std::fs::read_to_string("testdata/args_list_no_spaces.json").unwrap();
-        let wrapper: ArgsWrapper = serde_json::from_str(&json).unwrap();
-        let serialized = serde_json::to_value(&wrapper).unwrap();
-        assert_eq!(serialized["args"], "arg1 arg2");
-    }
-
-    #[test]
-    fn test_args_single_element_with_spaces_quoted() {
-        let json =
-            std::fs::read_to_string("testdata/args_single_element_with_spaces.json").unwrap();
-        let wrapper: ArgsWrapper = serde_json::from_str(&json).unwrap();
-        let serialized = serde_json::to_value(&wrapper).unwrap();
-        assert_eq!(serialized["args"], r#""path with spaces""#);
-    }
-
-    #[test]
-    fn test_args_empty_list() {
-        let json = std::fs::read_to_string("testdata/args_empty_list.json").unwrap();
-        let wrapper: ArgsWrapper = serde_json::from_str(&json).unwrap();
-        let serialized = serde_json::to_value(&wrapper).unwrap();
-        assert_eq!(serialized["args"], "");
-    }
-
-    #[test]
-    fn test_file_uri_unix_path() {
-        assert_eq!(
-            path_to_file_uri("/home/user/project"),
-            "file:///home/user/project"
-        );
-    }
-
-    #[test]
-    fn test_file_uri_unix_path_with_spaces() {
-        assert_eq!(
-            path_to_file_uri("/my/path with/spaces"),
-            "file:///my/path%20with/spaces"
-        );
-    }
-
-    #[test]
-    fn test_file_uri_windows_path() {
-        assert_eq!(
-            path_to_file_uri(r"C:\Users\user\project"),
-            "file:///C:/Users/user/project"
-        );
-    }
-
-    #[test]
-    fn test_file_uri_windows_path_with_spaces() {
-        assert_eq!(
-            path_to_file_uri(r"C:\Users\My User\project"),
-            "file:///C:/Users/My%20User/project"
-        );
     }
 }

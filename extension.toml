@@ -1,12 +1,13 @@
-id = "java"
-name = "Java"
-version = "6.8.28"
+id = "java-intellij"
+name = "Java (IntelliJ)"
+version = "0.1.0"
 schema_version = 1
 authors = [
     "Java Extension Contributors",
+    "Israel Rios <220787+israelrios@users.noreply.github.com>",
 ]
-description = "Java support."
-repository = "https://github.com/zed-extensions/java"
+description = "Java support powered by the JetBrains IntelliJ language server."
+repository = "https://github.com/israelrios/zed-java-intellij"
 
 [grammars.java]
 repository = "https://github.com/tree-sitter/tree-sitter-java"
@@ -26,15 +27,19 @@ commit = "deb0dcf8c4544f07564060f6e9b9f6e4b0bfc27d"
 repository = "https://github.com/fwcd/tree-sitter-kotlin"
 commit = "1852ea17b7f60fb3f9d84e0b1555d56b46b39fb1"
 
-[language_servers.jdtls]
-name = "Eclipse JDT Language Server"
-language = "Java"
+[language_servers.intellij-server]
+name = "IntelliJ Language Server"
+# "Kotlin" is defined by Zed's Kotlin extension; without it, only Java is served.
+languages = ["Java", "Kotlin"]
+
+[language_servers.intellij-server.language_ids]
+"Java" = "java"
+"Kotlin" = "kotlin"
 
 [language_servers.gradle-language-server]
 name = "Gradle Language Server"
 languages = ["Gradle", "Gradle KTS"]
 
-[debug_adapters.Java]
 
 [[capabilities]]
 kind = "process:exec"

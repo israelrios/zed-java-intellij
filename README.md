@@ -1,87 +1,173 @@
-# Java Extension for Zed
+# Java Extension for Zed (IntelliJ language server)
 
-This extension adds support for Java and `.properties` files to [Zed](https://zed.dev). It uses the [Eclipse JDT Language Server](https://projects.eclipse.org/projects/eclipse.jdt.ls) (JDTLS for short) to provide completions, code-actions and diagnostics.
+A fork of the [Zed Java extension](https://github.com/zed-extensions/java) that replaces the Eclipse JDT Language Server (JDTLS) with JetBrains' **IntelliJ language server**, the server behind the [Java and Kotlin by IntelliJ IDEA](https://open-vsx.org/extension/JetBrains/intellij-server) extension for VS Code.
 
-It also provides intelligence for Gradle build files via Microsoft's [Gradle Language Server](https://github.com/microsoft/vscode-gradle): plugin-aware completions, closures, and diagnostics for Groovy `.gradle` scripts, plus highlighting and build-evaluation diagnostics for Kotlin `.gradle.kts` scripts. See [Gradle Build Files](#gradle-build-files) below.
+It keeps everything else from upstream: the Java, `.properties`, Gradle (Groovy) and Gradle Kotlin DSL grammars, the run/test tasks, and the Gradle Language Server for build files.
+
+> [!IMPORTANT]
+> The IntelliJ language server is a **JetBrains preview (EAP)**. It is not open source, and it is covered by the *JetBrains LSP Extension Public EAP Agreement*. Each preview build expires 30 days after release; the extension checks Open VSX for newer builds (see `check_updates`). JetBrains says that from the 1.0 release on, the server will require an IntelliJ IDEA Ultimate subscription.
 
 ## Quick Start
 
-Install the extension via Zeds extension manager. It should work out of the box for most people. However, there are some things to know:
+1. Install the extension as a dev extension (see [Developing Locally](#developing-locally)).
+2. Open a Java project. On first start, the extension downloads the server, which is about 400 MB and includes its own JetBrains Runtime, so no JDK is needed to run it.
+3. Zed then asks you to accept the JetBrains EAP agreement. Choose **Read the Agreement** to open the bundled `EULA.txt` in Zed, then **Accept** to start the server.
 
-- It is generally recommended to open projects with the Zed-project root at the Java project root folder (where you would commonly have your `pom.xml` or `build.gradle` file). The extension will automatically detect Maven and Gradle projects in subdirectories, but opening at the project root provides the best experience. If you're working with a non-standard project layout or encounter issues with classpath resolution, see [Advanced Configuration/JDTLS initialization Options](#advanced-configurationjdtls-initialization-options) for fine-tuning.
+Your answer is recorded for that version of the agreement, so Zed asks again only when a server update changes the agreement. If you choose **Decline** or dismiss the prompt, the server doesn't start; run `editor: restart language server` to be asked again. Answer within Zed's language server request timeout (2 minutes by default). If you take longer, Zed gives up on the server, and you need to restart it.
 
-- By default the extension will download and run the latest official version of JDTLS for you, but this requires Java version 21 or higher to be available on your system via either the `$JAVA_HOME` environment variable or as a `java(.exe)` executable on your `$PATH`. The `java_home` configuration option allows you to specify a **separate** JDK 21+ installation specifically for running JDTLS — this is useful when your system default Java is a lower version required by your project. Note that `java_home` is also passed as the `JAVA_HOME` environment variable to the JDTLS process; to configure runtimes for your project itself, use `initialization_options.settings.java.configuration.runtimes` (see [Configuring Project Runtimes](#configuring-project-runtimes) below).
-
-- You can provide a **custom JDTLS binary** through one of these mechanisms (in priority order):
-  1. The `jdtls_launcher` setting — specify an absolute path to a JDTLS launch script
-  2. An executable named `jdtls` (or `jdtls.bat` on Windows) on your `$PATH`
-
-  When either is found, the extension will skip downloading and launching a managed JDTLS instance and use the provided one instead.
-
-- To support [Lombok](https://projectlombok.org/), the lombok-jar must be downloaded and registered as a Java-Agent when launching JDTLS. By default the extension automatically takes care of that, but in case you don't want that you can set the `lombok_support` configuration-option to `false`.
-
-- The option to let the extension automatically download a JDK can be enabled by setting `jdk_auto_download` to `true`. When enabled, the extension will download [Amazon Corretto](https://aws.amazon.com/corretto/) (an OpenJDK distribution) if no valid `java_home` is provided or if the specified one does not meet the minimum version requirement (Java 21). User-provided JDKs **always** take precedence.
-
-Here is a common `settings.json` including the above mentioned configurations:
+To accept without being asked, for example on a fresh machine, set `accept_eula`:
 
 ```jsonc
 "lsp": {
- "jdtls": {
+  "intellij-server": {
     "settings": {
-      // Path to a JDK 21+ used to run JDTLS.
-      // Also accepts the legacy key "java.home".
-      "java_home": "/path/to/your/JDK21+",
-      "lombok_support": true,
-      "jdk_auto_download": false,
-
-      // JVM heap size for JDTLS (maps to -Xms and -Xmx)
-      // Accepts values like "512m", "1G", "4096m", etc.
-      "min_memory": "1G",   // default: "1G"
-      "max_memory": "2G",   // default: unset (no -Xmx limit)
-
-      // Parent directory for JDTLS workspace data. The extension appends a
-      // unique jdtls-<workspace-hash> directory for each worktree.
-      "data_directory": "/path/to/jdtls-data",
-
-      // Controls when to check for updates for managed components
-      // - "always" (default): Check for the latest version at most once every 24 hours
-      //   and reuse the last successfully resolved version between checks
-      // - "once": Check for updates only if no local installation exists
-      // - "never": Never check for updates, only use existing local installations (errors if missing)
-      //
-      // Note: Invalid values will default to "always"
-      // If custom paths (below) are provided, check_updates is IGNORED for that component
-      "check_updates": "always",
-      
-      // Use custom installations instead of managed downloads
-      // When these are set, the extension will not download or manage these components
-      "jdtls_launcher": "/path/to/your/jdt-language-server/bin/jdtls",
-      "lombok_jar": "/path/to/your/lombok.jar",
-      "java_debug_jar": "/path/to/your/com.microsoft.java.debug.plugin.jar",
-      "lsp_proxy_path": "/path/to/your/java-lsp-proxy"
+      "accept_eula": true
     }
   }
 }
 ```
 
-`data_directory` must be an absolute parent directory. For example,
-`"data_directory": "C:/Opt/zed-jdtls"` produces a workspace-specific path such
-as `C:/Opt/zed-jdtls/jdtls-<workspace-hash>`. The setting applies to both the
-extension-managed JDTLS and a JDTLS launcher selected through `jdtls_launcher`
-or `PATH`. An invalid configured value prevents JDTLS from starting instead of
-falling back to the default cache location. Changing it causes JDTLS to create
-a fresh workspace index; the old cache is not moved or deleted automatically.
+This accepts whichever agreement the downloaded build ships with, including later versions. Either way, the extension starts the server with `--eula <hash>`, where the hash is computed from the downloaded `EULA.txt`.
 
-The bundled **Clear default JDTLS cache** task only removes caches from the
-extension's default OS cache location. When `data_directory` is configured,
-delete the `jdtls-*` directories beneath that parent manually, then restart the
-language server.
+Projects that use Maven, Gradle or Bazel are imported automatically. Open the Zed project at the build root (where `pom.xml`, `settings.gradle` or `MODULE.bazel` is).
+
+## Configuration
+
+```jsonc
+"lsp": {
+  "intellij-server": {
+    "settings": {
+      // Accept the JetBrains EAP agreement without being asked in Zed; see
+      // Quick Start.
+      "accept_eula": true,
+
+      // Extra JVM options for the server, passed through IJ_JAVA_OPTIONS.
+      // The server's own default heap is -Xmx2048m.
+      "jvm_args": ["-Xmx4g"],
+
+      // Parent directory for IntelliJ caches and indexes. The extension adds an
+      // intellij-server-<worktree-hash> directory for each worktree. Must be an
+      // absolute path. Default: $XDG_CACHE_HOME or ~/.cache (Linux),
+      // ~/Library/Caches (macOS), %LOCALAPPDATA% (Windows). See "Caches" below.
+      "system_directory": "/path/to/intellij-caches",
+
+      // Days before an unused project cache or library file is deleted; 0 keeps
+      // them forever. Default: 90.
+      "cache_retention_days": 90,
+
+      // Telemetry sent to JetBrains: "full", "anonymous" or "none" (default).
+      "data_sharing": "none",
+      // Region for JetBrains product terms and data processing: africa,
+      // americas, apac, china, europe, middle_east or oceania.
+      "region": "europe",
+
+      // Open library sources (JDK and dependencies) from go-to-definition,
+      // references and symbol search. See "Library sources" below.
+      "library_sources": true,
+
+      // When to look on Open VSX for a newer server build:
+      // - "always" (default): at most once every 24 hours
+      // - "once": only if no local installation exists
+      // - "never": only use an existing installation (errors if missing)
+      "check_updates": "always",
+
+      // Use your own server installation instead of the managed download.
+      // An `intellij-server` executable on your PATH is picked up the same way.
+      "server_path": "/path/to/intellij-server-263.6379.0/bin/intellij-server"
+    },
+
+    // Passed unchanged to the server as LSP initializationOptions.
+    "initialization_options": {
+      // JDK used to resolve symbols when the project doesn't define one.
+      "defaultSdk": "/path/to/jdk",
+      // Build tool per workspace folder URI: "gradle", "maven", "bazel", "jps",
+      // or "" to turn project import off.
+      "buildTools": { "file:///path/to/project": "maven" },
+      // Projects to import in addition to the auto-detected ones.
+      "projects": [
+        { "type": "maven", "path": "file:///path/to/project/pom.xml", "profiles": ["dev"] }
+      ]
+    }
+  }
+}
+```
+
+A server set with `server_path` or found on `PATH` lies outside the extension's sandbox, so the extension can't read its EULA. Accept it once yourself; the launcher remembers the acceptance for your user and machine:
+
+```sh
+intellij-server --show-eula
+intellij-server --eula <hash>   # the hash is printed when the server refuses to start
+```
+
+### How the server is obtained
+
+JetBrains publishes the server only through the VS Code extension. To find the current build, this extension:
+
+1. asks Open VSX for the latest `JetBrains.intellij-server` version for your platform;
+2. downloads that VSIX (about 2 MB) and reads the server archive's URL and SHA-256 from `extension/server-bundle.json`;
+3. downloads that archive (about 390 MB) from `download.jetbrains.com`, checks its SHA-256, and unpacks it into the extension's work directory under `intellij-server/<version>/`.
+
+Updates happen the same way, when a language server starts and `check_updates` allows it:
+
+- Servers already running keep going on the build they started with. The new build is used from the next server start, such as reopening the project or running `editor: restart language server`.
+- The previous build is kept for servers that are still running on it. Older builds are deleted.
+- An install appears only once it is complete, so an interrupted download leaves nothing half-installed and is cleaned up on the next attempt.
+- If the download fails, the checksum doesn't match, or `server-bundle.json` has no checksum, the installed build keeps being used, and the update is retried after 24 hours. Only a first install, with no build to fall back on, goes ahead without a checksum.
+
+## Kotlin
+
+The server also handles Kotlin. The "Kotlin" language itself comes from Zed's [Kotlin extension](https://github.com/zed-extensions/kotlin), so install it too, and make `intellij-server` its language server:
+
+```jsonc
+"languages": {
+  "Kotlin": { "language_servers": ["intellij-server", "!kotlin-language-server", "!kotlin-lsp"] }
+}
+```
+
+Kotlin files are only analyzed when the build sets them up as Kotlin sources: for Maven, the `kotlin-maven-plugin` and a `kotlin-stdlib` dependency. Otherwise they open without diagnostics.
+
+## Library sources
+
+The server points into libraries with `jar:` and `jrt:` URIs, for example `jar:///…/lib/src.zip!/java.base/java/util/List.java`. Zed can't open those, so the extension runs the server behind a small proxy, [`proxy/LibrarySourcesProxy.java`](proxy/LibrarySourcesProxy.java):
+
+- When a server message names a library URI, the proxy asks the server for the file's text with its `decompile` command. It writes the text to a read-only file under `<system_directory>/intellij-server-library-sources/` and hands Zed that file instead. The file's path repeats the library URI, so Zed shows where it comes from: `jar:///usr/lib/jvm/jdk-21/lib/src.zip!/java.base/java/util/List.java` opens as `…/intellij-server-library-sources/<hash>/usr/lib/jvm/jdk-21/lib/src.zip!/java.base/java/util/List.java`.
+- When Zed refers to one of those files, the proxy swaps the original URI back in, so the server keeps treating it as a library file. Hover, go-to-definition and references work inside it as well.
+- A reply waits at most 5 seconds for files. URIs that aren't ready by then are left unchanged, and the files are written in the background for next time.
+- The files are shared by all projects. A file from a jar is tied to the jar's size and modification time, so a rebuilt snapshot jar gets fresh text. Other files, such as JDK classes reached through `jrt:`, are kept per project.
+
+The proxy is a single Java source file. It runs on the JetBrains Runtime that ships with the server, so it needs no build step or separate download. On its first start it runs from source and compiles itself into `proxy.jar` in the background, and later starts use the jar (about 40 ms instead of 600 ms). The proxy also cleans up the caches (see below), so it always runs. Setting `library_sources` to `false` only makes it pass library URIs through unchanged.
+
+## Caches
+
+The server keeps its indexes in a directory per project, a few hundred MB each, inside `system_directory`:
+
+| Path | Contents |
+| --- | --- |
+| `intellij-server-<hash>/` | Caches and indexes for one project; `<hash>` is the SHA-1 of the project path. |
+| `intellij-server-library-sources/` | Library files opened through go-to-definition, shared by all projects. |
+
+`system_directory` defaults to `~/.cache` on Linux (or `$XDG_CACHE_HOME`), `~/Library/Caches` on macOS and `%LOCALAPPDATA%` on Windows.
+
+Each time a server starts, the proxy deletes, in the background:
+
+- caches of projects whose directory no longer exists;
+- caches of projects not opened for `cache_retention_days` (90 by default);
+- library files nobody opened in that time.
+
+Each project cache records its project path and last use in a `.zed-project` file. Set `cache_retention_days` to `0` to keep everything. The **Clear default IntelliJ server cache** task removes all caches at once.
+
+The server download itself, about 1 GB unpacked, lives in Zed's extension work directory: `~/.local/share/zed/extensions/work/java-intellij/` on Linux, `~/Library/Application Support/Zed/extensions/work/java-intellij/` on macOS and `%LOCALAPPDATA%\Zed\extensions\work\java-intellij\` on Windows.
+
+## Differences from upstream
+
+- **Language server:** IntelliJ instead of JDTLS. The server bundles IntelliJ's Lombok plugin, so there's no Lombok agent, `java-lsp-proxy` or Corretto download for the Java server.
+- **No debugger.** Upstream's debugger is a JDTLS plugin. The IntelliJ server has its own debug adapter, but its port is only available through the server's `start_debug_server` LSP command, and Zed extensions can't send LSP requests.
 
 ## Gradle Build Files
 
 For **Groovy** build scripts (`.gradle`) the extension runs Microsoft's [Gradle Language Server](https://github.com/microsoft/vscode-gradle), giving you completions for Gradle DSL closures, plugin-contributed blocks (e.g. `java {}`, `application {}`), Maven Central dependency coordinates, and syntax diagnostics.
 
-To resolve the *plugin-aware* parts of the model (which plugins are applied, the closures/methods they contribute, and the script classpath), the language server needs the resolved build model. The extension obtains this exactly the way vscode-gradle 3.18 does: a small native binary, `gradle-lsp-bridge`, drives the bundled `gradle-server` over JSON-RPC using a named pipe on Windows or a Unix-domain socket on Unix. Build-model messages are protobuf-encoded and carried as base64 payloads inside the JSON-RPC messages. The bridge keeps a single `gradle-server` process (and its Gradle daemon) warm for the lifetime of the session, so re-syncs after a build-file save are fast. Both the language server and the bridge are downloaded and managed automatically — no configuration is required.
+To resolve the *plugin-aware* parts of the model (which plugins are applied, the closures/methods they contribute, and the script classpath), the language server needs the resolved build model. The extension obtains this exactly the way vscode-gradle 3.18 does: a small native binary, `gradle-lsp-bridge`, drives the bundled `gradle-server` over JSON-RPC using a named pipe on Windows or a Unix-domain socket on Unix. Build-model messages are protobuf-encoded and carried as base64 payloads inside the JSON-RPC messages. The bridge keeps a single `gradle-server` process (and its Gradle daemon) warm for the lifetime of the session, so re-syncs after a build-file save are fast. Both the language server and the bridge are downloaded and managed automatically — no configuration is required. This fork does not build the bridge itself; it downloads the binary published with the upstream [zed-extensions/java](https://github.com/zed-extensions/java) release it was forked from (`v6.8.28`).
 
 ### Kotlin DSL (`.gradle.kts`)
 
@@ -92,7 +178,7 @@ The Gradle Language Server itself is Groovy-only, so it does **not** provide com
 
 (The Groovy language server's own — invalid — diagnostics for these files are suppressed, since it cannot parse Kotlin.)
 
-Configuration, when you need it, goes under the `gradle-language-server` language server in your `settings.json` (note: this is a **different** block from `jdtls`):
+Configuration, when you need it, goes under the `gradle-language-server` language server in your `settings.json` (note: this is a **different** block from `intellij-server`):
 
 ```jsonc
 "lsp": {
@@ -103,7 +189,7 @@ Configuration, when you need it, goes under the `gradle-language-server` languag
       // JDK used to run gradle-server and the Gradle daemon. Falls back to the
       // $JAVA_HOME environment variable. Modern Gradle requires JVM 17+, so set
       // this if your default Java is older. Also accepts the legacy key
-      // "java.home". (Same key the jdtls server uses.)
+      // "java.home".
       "java_home": "/path/to/your/JDK17+",
 
       // Gradle distribution (mirrors the Gradle Language Server's own schema).
@@ -114,7 +200,7 @@ Configuration, when you need it, goes under the `gradle-language-server` languag
       "gradleUserHome": null,       // overrides GRADLE_USER_HOME
       "gradle_jvm_arguments": null, // e.g. "-Xmx2G" for the Gradle build
 
-      // Uses the same always/once/never policy as JDTLS. In "always" mode,
+      // Uses the same always/once/never policy as `intellij-server`. In "always" mode,
       // successful version checks are cached for 24 hours.
       "check_updates": "always",
 
@@ -127,118 +213,6 @@ Configuration, when you need it, goes under the `gradle-language-server` languag
 ```
 
 > **Note:** The bridge launches `gradle-server` with the JDK resolved from this server's own settings — the `java_home` value under `gradle-language-server` (falling back to the `$JAVA_HOME` environment variable, then an auto-downloaded JDK). Modern Gradle requires JVM 17+, so ensure that JDK satisfies your Gradle distribution.
->
-> `java_home` is configured **per language server**: the value under `jdtls` does not carry over to `gradle-language-server` (and vice-versa). This is intentional — JDTLS needs a JDK 21+ to run, while the Gradle daemon only needs 17+ — but it means setting `java_home` under `jdtls` alone won't affect Gradle. Set it under `gradle-language-server` too, or rely on the shared `$JAVA_HOME` fallback that applies to both.
-
-## Project Symbol Search
-
-The extension supports project-wide symbol search with syntax-highlighted results. This feature is powered by JDTLS and can be accessed via Zed's symbol search.
-
-JDTLS uses **CamelCase fuzzy matching** for symbol queries. For example, searching for `EmpMe` would match `EmptyMedia`. The pattern works like `Emp*Me*`, matching the capital letters of CamelCase names.
-
-## Debugger
-
-Debug support is enabled via our [Fork of Java Debug](https://github.com/zed-industries/java-debug), which the extension will automatically download and start for you. Please refer to the [Zed Documentation](https://zed.dev/docs/debugger#getting-started) for general information about how debugging works in Zed.
-
-### Launch Mode
-
-To get started with Java, click the `edit debug.json` button in the Debug menu, and replace the contents of the file with the following:
-
-```jsonc
-[
-  {
-    "adapter": "Java",
-    "request": "launch",
-    "label": "Launch Debugger",
-    // if your project has multiple entry points, specify the one to use:
-    // "mainClass": "com.myorganization.myproject.MyMainClass",
-    //
-    // this effectively sets a breakpoint at your program entry:
-    "stopOnEntry": true,
-    // the working directory for the debug process
-    "cwd": "$ZED_WORKTREE_ROOT"
-  }
-]
-```
-
-You should then be able to start a new Debug Session with the "Launch Debugger" scenario from the debug menu.
-
-### Attach Mode
-
-You can attach to a running JVM process that was started with debug options (e.g. `-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=5005`):
-
-```jsonc
-[
-  {
-    "label": "Attach to JVM (port 5005)",
-    "adapter": "Java",
-    "request": "attach",
-    "hostName": "localhost",
-    "port": 5005
-  }
-]
-```
-
-### Debug Configuration Reference
-
-The following options are available in `debug.json` for **launch** configurations:
-
-| Option | Type | Description |
-|--------|------|-------------|
-| `request` | `"launch"` | Required. The request type. |
-| `mainClass` | `string` | Fully qualified class name. Auto-resolved if omitted. |
-| `projectName` | `string` | Project name to disambiguate when multiple projects exist. |
-| `args` | `string \| string[]` | Command line arguments passed to the program. |
-| `vmArgs` | `string \| string[]` | Extra JVM options (e.g. `-Xmx2G -Dprop=value`). |
-| `classPaths` | `string[]` | Classpaths for the JVM. Special values: `$Auto`, `$Runtime`, `$Test`. |
-| `modulePaths` | `string[]` | Module paths for the JVM. Auto-resolved if omitted. |
-| `cwd` | `string` | Working directory. Defaults to the worktree root. |
-| `env` | `object` | Extra environment variables for the program. |
-| `encoding` | `string` | The `file.encoding` setting for the JVM. |
-| `stopOnEntry` | `boolean` | Pause the program after launching. |
-| `noDebug` | `boolean` | Launch without attaching the debugger (e.g. for profiling). |
-| `console` | `string` | Console type: `internalConsole`, `integratedTerminal`, or `externalTerminal`. |
-| `shortenCommandLine` | `string` | Shorten long command lines: `none`, `jarmanifest`, or `argfile`. |
-| `launcherScript` | `string` | Path to a custom JVM launcher script. |
-| `javaExec` | `string` | Path to a specific Java executable. |
-
-For **attach** configurations:
-
-| Option | Type | Description |
-|--------|------|-------------|
-| `request` | `"attach"` | Required. The request type. |
-| `hostName` | `string` | Host name or IP of the remote debuggee. |
-| `port` | `integer` | Debug port of the remote debuggee. |
-| `timeout` | `integer` | Timeout before reconnecting in milliseconds (default: 30000). |
-| `projectName` | `string` | Project name for source resolution. |
-
-### Single-File Debugging
-
-If you're working a lot with single file debugging, you can use the following `debug.json` config instead:
-
-```jsonc
-[
-  {
-    "label": "Debug $ZED_STEM",
-    "adapter": "Java",
-    "request": "launch",
-    "mainClass": "$ZED_STEM",
-    "build": {
-      "command": "javac -d . $ZED_FILE",
-      "shell": {
-        "with_arguments": {
-          "program": "/bin/sh",
-          "args": ["-c"]
-        }
-      }
-    }
-  }
-]
-```
-
-This will compile and launch the debugger using the currently selected file as the entry point.
-Ideally, we would implement a run/debug option directly in the runnables (similar to how the Rust extension does it), which would allow you to easily start a debugging session without explicitly updating the entry point.
-Note that integrating the debugger with runnables is currently limited to core languages in Zed, so this is the best workaround for now.
 
 ## Launch Scripts (aka Tasks) in Windows
 
@@ -246,85 +220,10 @@ This extension provides tasks for running your application and tests from within
 
 There is a fairly straightforward fix that you can apply to make it work on Windows by supplying your own task scripts. Please see [this Issue](https://github.com/zed-extensions/java/issues/94) for information on how to do that and read the [Tasks section in Zeds documentation](https://zed.dev/docs/tasks) for more information.
 
-## Configuring Project Runtimes
-
-If your project targets a Java version different from the one running JDTLS, you can register multiple JDK installations via `java.configuration.runtimes`. JDTLS will use these to compile and run your project at the correct language level, while still running itself on JDK 21+.
-
-```jsonc
-"lsp": {
-  "jdtls": {
-    "settings": {
-      // JDK 21+ for running JDTLS itself
-      "java_home": "/usr/lib/jvm/java-21-openjdk"
-    },
-    "initialization_options": {
-      "settings": {
-        "java": {
-          "configuration": {
-            "runtimes": [
-              {
-                "name": "JavaSE-1.8",
-                "path": "/usr/lib/jvm/java-8-openjdk"
-              },
-              {
-                "name": "JavaSE-11",
-                "path": "/usr/lib/jvm/java-11-openjdk"
-              },
-              {
-                "name": "JavaSE-17",
-                "path": "/usr/lib/jvm/java-17-openjdk"
-              },
-              {
-                "name": "JavaSE-21",
-                "path": "/usr/lib/jvm/java-21-openjdk",
-                "default": true
-              }
-            ]
-          }
-        }
-      }
-    }
-  }
-}
-```
-
-- `name` must match an [execution environment identifier](https://wiki.eclipse.org/Execution_Environments) (e.g. `JavaSE-1.8`, `JavaSE-11`, `JavaSE-17`, `JavaSE-21`). Note that Java 8 uses the `1.8` naming convention while Java 9+ uses the major version number directly.
-- `path` is the absolute path to the JDK installation root (the directory containing `bin/java`).
-- `default` (optional) — set to `true` on the runtime JDTLS should use when no project-specific source level is detected.
-
-JDTLS will automatically pick the appropriate runtime based on your project's source level (from `pom.xml`, `build.gradle`, or `.classpath`). For example, a Maven project with `<maven.compiler.source>11</maven.compiler.source>` will use the `JavaSE-11` runtime for compilation and code analysis.
-
-> **macOS paths** typically look like `/Library/Java/JavaVirtualMachines/jdk-17.jdk/Contents/Home`
->
-> **Windows paths** typically look like `C:\Program Files\Java\jdk-17`
-
-> **Important:** If your default runtime is below Java 17 and you're working with Gradle projects, the Gradle daemon will fail to start because modern Gradle requires JVM 17+. In this case, set `java.import.gradle.java.home` to a JDK 17+ path so that the Gradle daemon uses a compatible JVM independently of your project's compilation runtime. See the [Advanced Configuration](#advanced-configurationjdtls-initialization-options) section below for details.
-
-## Maven Configuration
-
-If your project uses custom or internal Maven repositories, you should point JDTLS at your Maven `settings.xml` so it can resolve dependencies:
-
-```jsonc
-"initialization_options": {
-  "settings": {
-    "java": {
-      "configuration": {
-        "maven": {
-          "userSettings": "~/.m2/settings.xml",
-          // Optional: global settings for system-wide configuration
-          "globalSettings": "/path/to/global/settings.xml"
-        }
-      }
-    }
-  }
-}
-```
-
-Without this, JDTLS's embedded Maven will only resolve artifacts from Maven Central, which will cause unresolved dependency errors for projects using internal or private repositories.
 
 ## External Formatters
 
-If you prefer to use an external formatting tool like `google-java-format` or `palantir-java-format` instead of the built-in Eclipse formatter, you can configure Zed to run these tools on save or format commands.
+If you prefer to use an external formatting tool like `google-java-format` or `palantir-java-format` instead of the IntelliJ formatter, you can configure Zed to run these tools on save or format commands.
 
 ### Configuring google-java-format
 
@@ -438,377 +337,41 @@ If a native executable is not available for your platform (or you prefer not to 
 }
 ```
 
-## Advanced Configuration/JDTLS initialization Options
-
-JDTLS provides many configuration options that can be passed via the `initialize` LSP-request. The extension will pass the JSON-object from `lsp.jdtls.initialization_options` in your settings on to JDTLS. Please refer to the [JDTLS Configuration Wiki Page](https://github.com/eclipse-jdtls/eclipse.jdt.ls/wiki/Running-the-JAVA-LS-server-from-the-command-line#initialize-request) for the available options and values.
-
-The extension automatically injects the following defaults into `initialization_options` (unless you override them):
-
-- `workspaceFolders` — set to the worktree root as a `file://` URI
-- `extendedClientCapabilities.classFileContentsSupport` — `true` (enables decompiled source navigation)
-- `extendedClientCapabilities.resolveAdditionalTextEditsSupport` — `true`
-
-Below is an opinionated example configuration for JDTLS with most options enabled:
-
-```jsonc
-"lsp": {
-  "jdtls": {
-    "initialization_options": {
-      "bundles": [],
-      // The extension automatically sets this to the worktree root.
-      // Override only if your Java project root differs from the opened folder:
-      // "workspaceFolders": ["file:///path/to/your/java/project"],
-      "settings": {
-        "java": {
-          "configuration": {
-            "updateBuildConfiguration": "automatic",
-            "runtimes": [],
-            // Path to your Maven settings.xml (for custom/internal repositories)
-            "maven": {
-              "userSettings": "~/.m2/settings.xml"
-            }
-          },
-          "saveActions": {
-            "organizeImports": true
-          },
-          "compile": {
-            "nullAnalysis": {
-              "mode": "automatic"
-            }
-          },
-          "references": {
-            "includeAccessors": true,
-            "includeDecompiledSources": true
-          },
-          "jdt": {
-            "ls": {
-              // Enables Protocol Buffer support for .proto files in the project
-              "protobufSupport": {
-                "enabled": true
-              },
-              // Enables Groovy support for mixed Java/Groovy projects
-              "groovySupport": {
-                "enabled": true
-              },
-              // Enables Kotlin support so JDTLS can resolve Kotlin classes from Java code
-              // in mixed Kotlin/Java projects
-              "kotlinSupport": {
-                "enabled": true
-              },
-              // Enables Scala support for mixed Java/Scala projects
-              "scalaSupport": {
-                "enabled": true
-              },
-              // Enables AspectJ support for projects using aspect-oriented programming
-              "aspectjSupport": {
-                "enabled": true
-              },
-              // Enables Android project support
-              "androidSupport": {
-                "enabled": true
-              },
-              // Enables the javac-based compilation engine instead of the ECJ compiler
-              "javac": {
-                "enabled": true
-              }
-            }
-          },
-          "eclipse": {
-            "downloadSources": true
-          },
-          "maven": {
-            "downloadSources": true,
-            "updateSnapshots": true
-          },
-          "autobuild": {
-            "enabled": true
-          },
-          "maxConcurrentBuilds": 1,
-          "inlayHints": {
-            "parameterNames": {
-              "enabled": "all"
-            }
-          },
-          "signatureHelp": {
-            "enabled": true,
-            "description": {
-              "enabled": true
-            }
-          },
-          "format": {
-            "enabled": true,
-            "settings": {
-              // The formatter config to use
-              "url": "~/.config/jdtls/palantir_java_jdtls.xml"
-            },
-            "onType": {
-              "enabled": true
-            }
-          },
-          "contentProvider": {
-            "preferred": null
-          },
-          "import": {
-            "gradle": {
-              "enabled": true,
-              "wrapper": {
-                "enabled": true
-              },
-              // JVM used by the Gradle daemon (must be JVM 17+ for modern Gradle).
-              // Set this if your default runtime is a lower version.
-              "java": {
-                "home": "/path/to/your/JDK17+"
-              },
-              "annotationProcessing": {
-                "enabled": true
-              }
-            },
-            "maven": {
-              "enabled": true
-            },
-            "exclusions": [
-              "**/node_modules/**",
-              "**/.metadata/**",
-              "**/archetype-resources/**",
-              "**/META-INF/maven/**",
-              "/**/test/**"
-            ]
-          },
-          "completion": {
-            "enabled": true,
-            "favoriteStaticMembers": [
-              "org.junit.Assert.*",
-              "org.junit.Assume.*",
-              "org.junit.jupiter.api.Assertions.*",
-              "org.junit.jupiter.api.Assumptions.*",
-              "org.junit.jupiter.api.DynamicContainer.*",
-              "org.junit.jupiter.api.DynamicTest.*",
-              "org.mockito.Mockito.*",
-              "org.mockito.ArgumentMatchers.*"
-            ],
-            "importOrder": [
-              "java",
-              "javax",
-              "com",
-              "org"
-            ],
-            "postfix": {
-              "enabled": true
-            },
-            "chain": {
-              "enabled": true
-            },
-            "guessMethodArguments": "insertParameterNames",
-            "overwrite": true
-          },
-          "errors": {
-            "incompleteClasspath": {
-              "severity": "warning"
-            }
-          },
-          "implementationCodeLens": "all",
-          "referencesCodeLens": {
-            "enabled": true
-          }
-        }
-      }
-    }
-  }
-}
-```
-
-If you're working without a Gradle or Maven project, and the following error `The declared package "Example" does not match the expected package ""` pops up, consider adding these settings under
-
-```text
-MyProject/
- ├── .zed/
- │   └── settings.json
-```
-
-```jsonc
-"lsp": {
-  "jdtls": {
-    "initialization_options": {
-      "settings": {
-        "java": {
-          "project": {
-            "sourcePaths": [".", "src"],
-          }
-        }
-      }
-    }
-  }
-}
-```
-
-If changes are not picked up, clean JDTLS' cache (from a java file run the task `Clear JDTLS cache`) and restart the language server.
-
-## Architecture Note
-
-The extension uses two native binaries, both automatically downloaded from the [extension repository releases](https://github.com/zed-extensions/java/releases) and requiring no user configuration. Their managed versions are always bound to the extension version, so they do not use the 24-hour version cache and are not affected by `check_updates`. Explicit path settings and root-level development binaries installed with the `*-install` recipes still override the managed binaries:
-
-- **`java-lsp-proxy`** wraps the JDTLS process, enabling the extension to communicate with JDTLS for features like debug class resolution and classpath queries.
-- **`gradle-lsp-bridge`** bridges Zed to the Gradle Language Server and drives vscode-gradle 3.18's bundled `gradle-server` over JSON-RPC using a named pipe on Windows or a Unix-domain socket on Unix. Protobuf-encoded build-model messages are carried as base64 payloads inside JSON-RPC (see [Gradle Build Files](#gradle-build-files)). It is kept as a separate binary from the deliberately lean JDTLS proxy.
-
 ## Developing Locally
 
-If you want to contribute to this extension or test local changes, you can install it as a dev extension. Refer to the [Zed documentation on developing extensions](https://zed.dev/docs/extensions/developing-extensions) for full details.
+See the [Zed documentation on developing extensions](https://zed.dev/docs/extensions/developing-extensions).
 
 ### Prerequisites
 
-- [Rust](https://rustup.rs/) toolchain
-- The `wasm32-wasip1` target: `rustup target add wasm32-wasip1`
-- [just](https://github.com/casey/just) command runner (optional but recommended)
+- [Rust](https://rustup.rs/) toolchain, with the `wasm32-wasip2` target: `rustup target add wasm32-wasip2`
+- [just](https://github.com/casey/just) command runner (optional)
 
 ### Installing as a Dev Extension
 
-1. Clone the repository:
+1. Clone this repository.
+2. In Zed, open the extensions panel (`zed: extensions` in the command palette), click **Install Dev Extension**, and select the cloned folder.
+3. If the upstream **Java** extension is installed, uninstall it, or turn off its server for Java, so the two don't both run.
 
-   ```sh
-   git clone https://github.com/zed-extensions/java.git
-   cd java
+   ```jsonc
+   "languages": {
+     "Java": { "language_servers": ["intellij-server", "!jdtls", "..."] }
+   }
    ```
 
-2. Make sure you are on the branch that contains the feature or fix you want to test:
+   Zed may still offer to install the upstream `java` extension when it restores `.java` files at startup, before extensions have loaded. Click **No, don't install it** once and Zed stops asking.
 
-   ```sh
-   git branch --show-current
-   # Switch if needed:
-   git checkout <feature-branch>
-   ```
-
-3. In Zed, open the extensions panel (`zed: extensions` in the command palette), click the **Install Dev Extension** button, and select the cloned repository folder.
-
-   Zed will build the WASM extension automatically and load it. After making changes to the extension source, use **Rebuild Dev Extension** from the command palette to pick them up.
+After changing the source, run **Rebuild Dev Extension** from the command palette.
 
 ### Using the `justfile`
 
-The project includes a `justfile` with common development tasks:
-
 | Recipe | Description |
 |--------|-------------|
-| `just proxy-build` | Build the proxy binary in debug mode |
-| `just proxy-release` | Build the proxy binary in release mode |
-| `just proxy-install` | Build release proxy and copy it to the extension workdir |
-| `just bridge-build` | Build the gradle-lsp-bridge binary in debug mode |
-| `just bridge-release` | Build the gradle-lsp-bridge binary in release mode |
-| `just bridge-install` | Build release gradle-lsp-bridge and copy it to the extension workdir |
 | `just ext-build` | Build the WASM extension in release mode |
 | `just fmt` | Format all code (Rust + tree-sitter queries) |
-| `just clippy` | Run clippy on all crates |
+| `just clippy` | Run clippy |
 | `just lint` | Format and lint all code |
-| `just all` | Lint, build extension, and install all native binaries |
+| `just all` | Lint and build |
 
-### Testing Local Binary Changes
+## License
 
-The native binaries (`java-lsp-proxy` in `proxy/`, `gradle-lsp-bridge` in `gradle-bridge/`) are **not** rebuilt when you use "Rebuild Dev Extension" — and by default the extension downloads release binaries from GitHub. There are two ways to run a local build instead.
-
-#### Option A: Install into the extension workdir (recommended)
-
-The `*-install` recipes build the release binary and copy it into the extension's working directory, where the extension picks it up in place of the downloaded release:
-
-```sh
-just proxy-install     # java-lsp-proxy
-just bridge-install    # gradle-lsp-bridge
-```
-
-Each copies to the `bin/` directory of the Zed extension workdir:
-
-- **macOS**: `~/Library/Application Support/Zed/extensions/work/java/bin/`
-- **Linux**: `~/.local/share/zed/extensions/work/java/bin/`
-- **Windows**: `%LOCALAPPDATA%/Zed/extensions/work/java/bin/`
-
-After installing, restart the language server in Zed (`jdtls` or `gradle-language-server`) for the change to take effect.
-
-#### Option B: Point a path setting at your `target/` build
-
-Build the binary without installing it, then point the extension directly at it with the corresponding path setting:
-
-```sh
-just proxy-release     # or: just bridge-release
-```
-
-```jsonc
-"lsp": {
-  "jdtls": {
-    "settings": {
-      // Absolute path to your locally built proxy. Replace <target> with your
-      // host triple, e.g. aarch64-apple-darwin (run `rustc -vV | grep host`).
-      "lsp_proxy_path": "/path/to/java/target/<target>/release/java-lsp-proxy"
-    }
-  },
-  "gradle-language-server": {
-    "settings": {
-      "gradle_bridge_path": "/path/to/java/target/<target>/release/gradle-lsp-bridge"
-    }
-  }
-}
-```
-
-When a path setting is provided, the extension uses that binary as-is and skips the managed download entirely — so there's no need to set `check_updates`. Rebuild and restart the language server to pick up changes.
-
-> **Note:** The bridge's protobuf message definitions mirror vscode-gradle 3.18's bundled `gradle.proto` contract. The schema is retained in `gradle-bridge/proto/gradle.proto`, with the corresponding Rust message types under `gradle-bridge/src/gen/`.
-
-### Remote Development (SSH)
-
-When using [Zed's remote development](https://zed.dev/docs/remote-development) over SSH, the language server and all native binaries run on the **remote host**, not your local machine. For standard use they are auto-downloaded from GitHub releases for the remote server's platform — no action is needed.
-
-However, if you're **testing local binary changes** against a remote host, you need to get the binary onto the remote server yourself. The path settings (`lsp_proxy_path`, `gradle_bridge_path`) are resolved on the remote host, so once the binary is there you point the setting at it exactly as you would locally.
-
-On remote hosts, extensions are stored under a **different path** than on your local machine — typically:
-
-```text
-~/.local/share/zed/remote_extensions/work/java/bin/
-```
-
-> **Tip:** If you're unsure of the exact path, SSH into the remote and look for it:
->
-> ```sh
-> find ~/.local/share/zed -type d -name "bin" 2>/dev/null
-> ```
-
-#### Option A: Build on the remote directly
-
-If you have Rust installed on the remote server, clone the repo there and build natively:
-
-```sh
-# On the remote host
-git clone https://github.com/zed-extensions/java.git
-cd java
-cargo build --release -p java-lsp-proxy -p gradle-lsp-bridge
-# Binaries are at: <repo>/target/release/{java-lsp-proxy,gradle-lsp-bridge}
-
-# Copy to the remote extensions workdir
-mkdir -p ~/.local/share/zed/remote_extensions/work/java/bin
-cp target/release/java-lsp-proxy \
-   target/release/gradle-lsp-bridge \
-   ~/.local/share/zed/remote_extensions/work/java/bin/
-```
-
-#### Option B: Cross-compile locally and copy
-
-If you prefer to build on your local machine, cross-compile for the remote target (typically Linux x86_64 or aarch64) and `scp` the binaries anywhere on the remote:
-
-```sh
-# Build for the remote's target
-cargo build --release --target x86_64-unknown-linux-gnu -p java-lsp-proxy -p gradle-lsp-bridge
-# You may need: rustup target add x86_64-unknown-linux-gnu (and a linker in .cargo/config.toml)
-
-# Copy the binaries to the remote server
-scp target/x86_64-unknown-linux-gnu/release/java-lsp-proxy \
-    target/x86_64-unknown-linux-gnu/release/gradle-lsp-bridge \
-    user@remote:~/java-bins/
-```
-
-Then set the path settings to the remote paths and restart the language server:
-
-```jsonc
-"lsp": {
-  "jdtls": {
-    "settings": { "lsp_proxy_path": "/home/user/java-bins/java-lsp-proxy" }
-  },
-  "gradle-language-server": {
-    "settings": { "gradle_bridge_path": "/home/user/java-bins/gradle-lsp-bridge" }
-  }
-}
-```
+The extension code is Apache-2.0, like upstream. The IntelliJ language server it downloads is proprietary JetBrains software under its own agreement.

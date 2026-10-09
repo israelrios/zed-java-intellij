@@ -58,10 +58,6 @@ impl Downloadable for Jdk {
             .map(|(path, _)| path)
     }
 
-    fn loaded(&self) -> bool {
-        self.cached_path.is_some()
-    }
-
     fn fetch_latest_version(&self, _worktree: &Worktree) -> zed::Result<String> {
         Ok(zed::latest_github_release(
             CORRETTO_REPO,

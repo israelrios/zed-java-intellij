@@ -1,17 +1,6 @@
-[workspace]
-members = [
-    ".",
-    "proxy",
-    "proxy-common",
-    "gradle-bridge"
-]
-
-[workspace.dependencies]
-proxy-common = { path = "proxy-common" }
-
 [package]
-name = "zed_java"
-version = "6.8.28"
+name = "zed_java_intellij"
+version = "0.1.0"
 edition = "2024"
 publish = false
 license = "Apache-2.0"
@@ -21,12 +10,13 @@ path = "src/java.rs"
 crate-type = ["cdylib"]
 
 [dependencies]
+flate2 = "1.1.10"
 hex = "0.4.3"
-percent-encoding = "2.3.2"
-regex = "1.12.2"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
 sha1 = "0.10.6"
+sha2 = "0.10.9"
+tar = { version = "0.4.46", default-features = false }
 zed_extension_api = "0.7.0"
 
 [dev-dependencies]
@@ -35,3 +25,4 @@ tree-sitter-java = "0.23.5"
 # Same commit as `grammars.kotlin` in extension.toml, so the test compiles the queries Zed loads.
 tree-sitter-kotlin = { git = "https://github.com/fwcd/tree-sitter-kotlin", rev = "1852ea17b7f60fb3f9d84e0b1555d56b46b39fb1" }
 insta = { version = "1.46", features = ["yaml"] }
+zip = { version = "9.0.0", default-features = false, features = ["deflate-flate2"] }

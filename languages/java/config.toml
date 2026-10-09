@@ -17,4 +17,3 @@ block_comment = { start = "/*", prefix="", end = "*/", tab_size = 2 }
 documentation_comment = { start = "/**", end = "*/", prefix = "* ", tab_size = 1 }
 prettier_parser_name = "java"
 prettier_plugins = ["prettier-plugin-java"]
-debuggers = ["Java"]

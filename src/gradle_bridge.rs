@@ -11,20 +11,22 @@ use zed_extension_api::{
 use crate::{
     config::get_gradle_bridge_path,
     util::{
-        NATIVE_BIN_DIR, extension_release_version, find_native_binary, platform_asset_name,
-        platform_exec_name, remove_all_directories_except,
+        NATIVE_BIN_DIR, find_native_binary_in_release, platform_asset_name, platform_exec_name,
+        remove_all_directories_except,
     },
 };
 
 const BRIDGE_BINARY: &str = "gradle-lsp-bridge";
 const BRIDGE_INSTALL_PATH: &str = NATIVE_BIN_DIR;
 const GITHUB_REPO: &str = "zed-extensions/java";
+/// This fork doesn't build the bridge; it uses the binary from the upstream
+/// release it was forked from.
+const UPSTREAM_RELEASE: &str = "v6.8.28";
 
 /// Downloads and locates the `gradle-lsp-bridge` binary — the native process
 /// that bridges Zed to the Gradle Language Server and drives the real
-/// `gradle-server.jar` over JSON-RPC. Mirrors [`crate::proxy::Proxy`], but resolves
-/// its own asset name so the two binaries can be downloaded independently from
-/// the shared release.
+/// `gradle-server.jar` over JSON-RPC. Downloaded from the upstream
+/// zed-extensions/java release this extension was forked from.
 pub struct GradleBridge;
 
 impl GradleBridge {
@@ -44,7 +46,7 @@ impl GradleBridge {
 
     /// Find a development override or the bridge matching the extension release.
     fn find_local(&self) -> Option<PathBuf> {
-        find_native_binary(&bridge_exec())
+        find_native_binary_in_release(&bridge_exec(), UPSTREAM_RELEASE)
     }
 
     /// Download and validate the bridge asset for the specified extension release.
@@ -107,7 +109,7 @@ impl GradleBridge {
             return Ok(path);
         }
 
-        self.download(&extension_release_version(), language_server_id)
+        self.download(UPSTREAM_RELEASE, language_server_id)
     }
 }
 

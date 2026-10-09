@@ -710,15 +710,18 @@ fn test_no_build_tool_command_logic() {
 }
 
 #[test]
-fn test_clear_cache_task_only_removes_default_jdtls_directories() {
-    let project = TestProject::new("clear_jdtls_cache", "none", None);
+fn test_clear_cache_task_only_removes_default_intellij_directories() {
+    let project = TestProject::new("clear_intellij_cache", "none", None);
     let default_cache = project.temp_dir.join("default-cache");
-    let default_jdtls = default_cache.join("jdtls-default");
+    let default_server = default_cache.join("intellij-server-default");
     let unrelated = default_cache.join("unrelated");
-    let custom_jdtls = project.temp_dir.join("custom-cache").join("jdtls-custom");
-    fs::create_dir_all(&default_jdtls).unwrap();
+    let custom_server = project
+        .temp_dir
+        .join("custom-cache")
+        .join("intellij-server-custom");
+    fs::create_dir_all(&default_server).unwrap();
     fs::create_dir_all(&unrelated).unwrap();
-    fs::create_dir_all(&custom_jdtls).unwrap();
+    fs::create_dir_all(&custom_server).unwrap();
 
     let stdout = project
         .task("java-clear-cache")
@@ -728,9 +731,9 @@ fn test_clear_cache_task_only_removes_default_jdtls_directories() {
         )
         .run();
 
-    assert!(!default_jdtls.exists());
+    assert!(!default_server.exists());
     assert!(unrelated.exists());
-    assert!(custom_jdtls.exists());
-    assert!(stdout.contains("Default JDTLS cache cleared"));
-    assert!(stdout.contains("data_directory"));
+    assert!(custom_server.exists());
+    assert!(stdout.contains("Default IntelliJ server cache cleared"));
+    assert!(stdout.contains("system_directory"));
 }

@@ -18,8 +18,6 @@ pub trait Downloadable {
 
     fn find_local(&self) -> Option<PathBuf>;
 
-    fn loaded(&self) -> bool;
-
     fn fetch_latest_version(&self, worktree: &Worktree) -> zed::Result<String>;
 
     fn download(
@@ -141,30 +139,38 @@ mod fallback_tests {
 
     #[test]
     fn test_check_updates_always_allows_download() {
-        let result =
-            should_use_local_or_download(&None, None, "jdtls", &update_check_path("jdtls"))
-                .unwrap();
+        let result = should_use_local_or_download(
+            &None,
+            None,
+            "intellij-server",
+            &update_check_path("intellij-server"),
+        )
+        .unwrap();
         assert!(result.is_none(), "Always mode should allow download");
     }
 
     #[test]
     fn test_check_updates_always_with_local_still_downloads() {
-        let local = PathBuf::from("/mock/jdtls/1.44.0");
-        let result =
-            should_use_local_or_download(&None, Some(local), "jdtls", &update_check_path("jdtls"))
-                .unwrap();
+        let local = PathBuf::from("/mock/intellij-server/0.0.13");
+        let result = should_use_local_or_download(
+            &None,
+            Some(local),
+            "intellij-server",
+            &update_check_path("intellij-server"),
+        )
+        .unwrap();
         assert!(result.is_none(), "Always mode downloads even with local");
     }
 
     #[test]
     fn test_check_updates_never_with_local_uses_it() {
         let config = Some(json!({"check_updates": "never"}));
-        let local = PathBuf::from("/mock/jdtls/1.44.0");
+        let local = PathBuf::from("/mock/intellij-server/0.0.13");
         let result = should_use_local_or_download(
             &config,
             Some(local.clone()),
-            "jdtls",
-            &update_check_path("jdtls"),
+            "intellij-server",
+            &update_check_path("intellij-server"),
         )
         .unwrap();
         assert_eq!(result, Some(local));
@@ -173,20 +179,24 @@ mod fallback_tests {
     #[test]
     fn test_check_updates_never_without_local_is_error() {
         let config = Some(json!({"check_updates": "never"}));
-        let result =
-            should_use_local_or_download(&config, None, "jdtls", &update_check_path("jdtls"));
+        let result = should_use_local_or_download(
+            &config,
+            None,
+            "intellij-server",
+            &update_check_path("intellij-server"),
+        );
         assert!(result.is_err());
     }
 
     #[test]
     fn test_check_updates_once_with_local_uses_it() {
         let config = Some(json!({"check_updates": "once"}));
-        let local = PathBuf::from("/mock/jdtls/1.44.0");
+        let local = PathBuf::from("/mock/intellij-server/0.0.13");
         let result = should_use_local_or_download(
             &config,
             Some(local.clone()),
-            "jdtls",
-            &update_check_path("jdtls"),
+            "intellij-server",
+            &update_check_path("intellij-server"),
         )
         .unwrap();
         assert_eq!(result, Some(local));

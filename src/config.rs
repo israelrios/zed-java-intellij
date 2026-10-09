@@ -4,6 +4,8 @@ use zed_extension_api::{Os, Worktree, current_platform, serde_json::Value};
 
 use crate::util::expand_home_path;
 
+const DEFAULT_CACHE_RETENTION_DAYS: u64 = 90;
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub enum CheckUpdates {
     #[default]
@@ -39,19 +41,19 @@ pub fn get_java_home(configuration: &Option<Value>, worktree: &Worktree) -> Opti
     }
 }
 
-fn configured_jdtls_data_directory(configuration: &Option<Value>) -> Result<Option<&str>, String> {
+fn configured_system_directory(configuration: &Option<Value>) -> Result<Option<&str>, String> {
     let Some(value) = configuration
         .as_ref()
-        .and_then(|configuration| configuration.pointer("/data_directory"))
+        .and_then(|configuration| configuration.pointer("/system_directory"))
     else {
         return Ok(None);
     };
 
     let path = value
         .as_str()
-        .ok_or_else(|| "JDTLS data_directory must be a string".to_string())?;
+        .ok_or_else(|| "system_directory must be a string".to_string())?;
     if path.trim().is_empty() {
-        return Err("JDTLS data_directory must not be empty".to_string());
+        return Err("system_directory must not be empty".to_string());
     }
 
     Ok(Some(path))
@@ -62,7 +64,7 @@ fn configured_jdtls_data_directory(configuration: &Option<Value>) -> Result<Opti
 /// Windows requires custom logic to recognize:
 /// - Drive paths: C:\... or C:/...
 /// - UNC paths: \\server\share\... or //server/share/..
-fn is_absolute_data_directory(path: &str, os: Os) -> bool {
+fn is_absolute_directory(path: &str, os: Os) -> bool {
     match os {
         Os::Windows => {
             let bytes = path.as_bytes();
@@ -77,28 +79,26 @@ fn is_absolute_data_directory(path: &str, os: Os) -> bool {
     }
 }
 
-fn validate_jdtls_data_directory(path: String, os: Os) -> Result<String, String> {
-    if is_absolute_data_directory(&path, os) {
+fn validate_system_directory(path: String, os: Os) -> Result<String, String> {
+    if is_absolute_directory(&path, os) {
         Ok(path)
     } else {
-        Err(format!(
-            "JDTLS data_directory must be an absolute path: {path}"
-        ))
+        Err(format!("system_directory must be an absolute path: {path}"))
     }
 }
 
-/// Returns the parent directory where per-worktree JDTLS data directories are stored.
-pub fn get_jdtls_data_directory(
+/// Returns the parent directory where per-worktree IntelliJ caches and indexes are stored.
+pub fn get_system_directory(
     configuration: &Option<Value>,
     worktree: &Worktree,
 ) -> Result<Option<String>, String> {
-    let Some(data_directory) = configured_jdtls_data_directory(configuration)? else {
+    let Some(data_directory) = configured_system_directory(configuration)? else {
         return Ok(None);
     };
     let path = expand_home_path(worktree, data_directory.to_string())
-        .map_err(|err| format!("Failed to expand JDTLS data_directory: {err}"))?;
+        .map_err(|err| format!("Failed to expand system_directory: {err}"))?;
 
-    validate_jdtls_data_directory(path, current_platform().0).map(Some)
+    validate_system_directory(path, current_platform().0).map(Some)
 }
 
 pub fn is_java_autodownload(configuration: &Option<Value>) -> bool {
@@ -110,18 +110,6 @@ pub fn is_java_autodownload(configuration: &Option<Value>) -> bool {
                 .and_then(|enabled| enabled.as_bool())
         })
         .unwrap_or(false)
-}
-
-pub fn is_lombok_enabled(configuration: &Option<Value>) -> bool {
-    configuration
-        .as_ref()
-        .and_then(|configuration| {
-            configuration
-                .pointer("/lombok_support")
-                .or_else(|| configuration.pointer("/java/jdt/ls/lombokSupport/enabled")) // legacy support
-                .and_then(|enabled| enabled.as_bool())
-        })
-        .unwrap_or(true)
 }
 
 pub fn get_check_updates(configuration: &Option<Value>) -> CheckUpdates {
@@ -141,113 +129,103 @@ pub fn get_check_updates(configuration: &Option<Value>) -> CheckUpdates {
     CheckUpdates::default()
 }
 
-pub fn get_jdtls_launcher(configuration: &Option<Value>, worktree: &Worktree) -> Option<String> {
-    if let Some(configuration) = configuration
-        && let Some(launcher_path) = configuration
-            .pointer("/jdtls_launcher")
-            .and_then(|x| x.as_str())
-    {
-        match expand_home_path(worktree, launcher_path.to_string()) {
-            Ok(path) => return Some(path),
-            Err(err) => {
-                println!("{err}");
-            }
-        }
-    }
-
-    None
+/// Path to a user-provided `intellij-server` launcher (`<server>/bin/intellij-server`).
+pub fn get_server_launcher(configuration: &Option<Value>, worktree: &Worktree) -> Option<String> {
+    configured_path(configuration, worktree, "/server_path")
 }
 
-/// Returns the max heap size for jdtls (e.g. "2G", "4096m").
-/// Maps to the `-Xmx` JVM argument.
-pub fn get_max_memory(configuration: &Option<Value>) -> Option<String> {
+/// Whether the user accepted the JetBrains EAP agreement, letting the extension
+/// pass the bundled EULA hash to the launcher.
+pub fn is_eula_accepted(configuration: &Option<Value>) -> bool {
     configuration
         .as_ref()
-        .and_then(|c| c.pointer("/max_memory").and_then(|v| v.as_str()))
-        .map(|s| s.to_string())
+        .and_then(|configuration| configuration.pointer("/accept_eula"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
 }
 
-/// Returns the initial heap size for jdtls (e.g. "512m", "1G").
-/// Maps to the `-Xms` JVM argument. Defaults to "1G".
-pub fn get_min_memory(configuration: &Option<Value>) -> Option<String> {
+/// Whether to turn `jar:` and `jrt:` library locations into files Zed can
+/// open. On by default.
+pub fn is_library_sources_enabled(configuration: &Option<Value>) -> bool {
     configuration
         .as_ref()
-        .and_then(|c| c.pointer("/min_memory").and_then(|v| v.as_str()))
-        .map(|s| s.to_string())
+        .and_then(|configuration| configuration.pointer("/library_sources"))
+        .and_then(Value::as_bool)
+        .unwrap_or(true)
 }
 
-pub fn get_lombok_jar(configuration: &Option<Value>, worktree: &Worktree) -> Option<String> {
-    if let Some(configuration) = configuration
-        && let Some(jar_path) = configuration
-            .pointer("/lombok_jar")
-            .and_then(|x| x.as_str())
-    {
-        match expand_home_path(worktree, jar_path.to_string()) {
-            Ok(path) => return Some(path),
-            Err(err) => {
-                println!("{err}");
-            }
-        }
-    }
-
-    None
+/// Days a project cache or library file may go unused before it is deleted;
+/// `0` keeps them forever. Defaults to 90.
+pub fn get_cache_retention_days(configuration: &Option<Value>) -> u64 {
+    configuration
+        .as_ref()
+        .and_then(|configuration| configuration.pointer("/cache_retention_days"))
+        .and_then(Value::as_u64)
+        .unwrap_or(DEFAULT_CACHE_RETENTION_DAYS)
 }
 
-pub fn get_java_debug_jar(configuration: &Option<Value>, worktree: &Worktree) -> Option<String> {
-    if let Some(configuration) = configuration
-        && let Some(jar_path) = configuration
-            .pointer("/java_debug_jar")
-            .and_then(|x| x.as_str())
-    {
-        match expand_home_path(worktree, jar_path.to_string()) {
-            Ok(path) => return Some(path),
-            Err(err) => {
-                println!("{err}");
-            }
-        }
-    }
-
-    None
+/// Extra JVM options for the server, passed through `IJ_JAVA_OPTIONS`.
+pub fn get_jvm_args(configuration: &Option<Value>) -> Vec<String> {
+    configuration
+        .as_ref()
+        .and_then(|configuration| configuration.pointer("/jvm_args"))
+        .and_then(Value::as_array)
+        .map(|args| {
+            args.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
-pub fn get_lsp_proxy_path(configuration: &Option<Value>, worktree: &Worktree) -> Option<String> {
-    if let Some(configuration) = configuration
-        && let Some(lsp_proxy_path) = configuration
-            .pointer("/lsp_proxy_path")
-            .and_then(|x| x.as_str())
-    {
-        match expand_home_path(worktree, lsp_proxy_path.to_string()) {
-            Ok(path) => return Some(path),
-            Err(err) => {
-                println!("{err}");
-            }
+/// Telemetry level, `full` or `anonymous`; anything else sends nothing.
+pub fn get_data_sharing(configuration: &Option<Value>) -> Option<String> {
+    configuration
+        .as_ref()
+        .and_then(|configuration| configuration.pointer("/data_sharing"))
+        .and_then(Value::as_str)
+        .filter(|value| matches!(*value, "full" | "anonymous"))
+        .map(str::to_string)
+}
+
+/// Region for JetBrains product terms and data processing.
+pub fn get_region(configuration: &Option<Value>) -> Option<String> {
+    configuration
+        .as_ref()
+        .and_then(|configuration| configuration.pointer("/region"))
+        .and_then(Value::as_str)
+        .filter(|value| {
+            matches!(
+                *value,
+                "africa" | "americas" | "apac" | "china" | "europe" | "middle_east" | "oceania"
+            )
+        })
+        .map(str::to_string)
+}
+
+fn configured_path(
+    configuration: &Option<Value>,
+    worktree: &Worktree,
+    pointer: &str,
+) -> Option<String> {
+    let path = configuration.as_ref()?.pointer(pointer)?.as_str()?;
+    match expand_home_path(worktree, path.to_string()) {
+        Ok(path) => Some(path),
+        Err(err) => {
+            println!("{err}");
+            None
         }
     }
-
-    None
 }
 
 /// Path to a local `gradle-lsp-bridge` binary, overriding the downloaded one.
-/// Parallel to [`get_lsp_proxy_path`] for the JDTLS proxy; primarily used to
-/// test a locally-built bridge before a release ships the asset.
+/// Primarily used to test a locally-built bridge.
 pub fn get_gradle_bridge_path(
     configuration: &Option<Value>,
     worktree: &Worktree,
 ) -> Option<String> {
-    if let Some(configuration) = configuration
-        && let Some(bridge_path) = configuration
-            .pointer("/gradle_bridge_path")
-            .and_then(|x| x.as_str())
-    {
-        match expand_home_path(worktree, bridge_path.to_string()) {
-            Ok(path) => return Some(path),
-            Err(err) => {
-                println!("{err}");
-            }
-        }
-    }
-
-    None
+    configured_path(configuration, worktree, "/gradle_bridge_path")
 }
 
 #[cfg(test)]
@@ -256,67 +234,65 @@ mod tests {
 
     use zed_extension_api::Os;
 
-    use super::{
-        configured_jdtls_data_directory, is_absolute_data_directory, validate_jdtls_data_directory,
-    };
+    use super::{configured_system_directory, is_absolute_directory, validate_system_directory};
 
     #[test]
     fn configured_data_directory_distinguishes_absent_configuration() {
-        assert_eq!(configured_jdtls_data_directory(&None), Ok(None));
-        assert_eq!(configured_jdtls_data_directory(&Some(json!({}))), Ok(None));
+        assert_eq!(configured_system_directory(&None), Ok(None));
+        assert_eq!(configured_system_directory(&Some(json!({}))), Ok(None));
     }
 
     #[test]
     fn configured_data_directory_accepts_non_empty_strings() {
-        let configuration = Some(json!({ "data_directory": "/tmp/jdtls" }));
+        let configuration = Some(json!({ "system_directory": "/tmp/intellij" }));
 
         assert_eq!(
-            configured_jdtls_data_directory(&configuration),
-            Ok(Some("/tmp/jdtls"))
+            configured_system_directory(&configuration),
+            Ok(Some("/tmp/intellij"))
         );
     }
 
     #[test]
     fn configured_data_directory_rejects_empty_values() {
         let empty_error =
-            configured_jdtls_data_directory(&Some(json!({ "data_directory": "" }))).unwrap_err();
+            configured_system_directory(&Some(json!({ "system_directory": "" }))).unwrap_err();
         let whitespace_error =
-            configured_jdtls_data_directory(&Some(json!({ "data_directory": "  " }))).unwrap_err();
+            configured_system_directory(&Some(json!({ "system_directory": "  " }))).unwrap_err();
 
-        assert_eq!(empty_error, "JDTLS data_directory must not be empty");
-        assert_eq!(whitespace_error, "JDTLS data_directory must not be empty");
+        assert_eq!(empty_error, "system_directory must not be empty");
+        assert_eq!(whitespace_error, "system_directory must not be empty");
     }
 
     #[test]
     fn configured_data_directory_rejects_non_string_values() {
         let error =
-            configured_jdtls_data_directory(&Some(json!({ "data_directory": true }))).unwrap_err();
+            configured_system_directory(&Some(json!({ "system_directory": true }))).unwrap_err();
 
-        assert_eq!(error, "JDTLS data_directory must be a string");
+        assert_eq!(error, "system_directory must be a string");
     }
 
     #[test]
     fn data_directory_validation_rejects_relative_paths() {
         assert_eq!(
-            validate_jdtls_data_directory("tmp/jdtls".to_string(), Os::Linux),
-            Err("JDTLS data_directory must be an absolute path: tmp/jdtls".to_string())
+            validate_system_directory("tmp/intellij".to_string(), Os::Linux),
+            Err("system_directory must be an absolute path: tmp/intellij".to_string())
         );
         assert_eq!(
-            validate_jdtls_data_directory(r"Opt\zed-jdtls".to_string(), Os::Windows),
-            Err(r"JDTLS data_directory must be an absolute path: Opt\zed-jdtls".to_string())
+            validate_system_directory(r"Opt\zed-intellij".to_string(), Os::Windows),
+            Err(r"system_directory must be an absolute path: Opt\zed-intellij".to_string())
         );
     }
 
     #[test]
     fn data_directory_requires_platform_absolute_paths() {
-        assert!(is_absolute_data_directory("/tmp/jdtls", Os::Linux));
-        assert!(!is_absolute_data_directory("tmp/jdtls", Os::Linux));
-        assert!(is_absolute_data_directory(r"C:\Opt\zed-jdtls", Os::Windows));
-        assert!(is_absolute_data_directory("C:/Opt/zed-jdtls", Os::Windows));
-        assert!(is_absolute_data_directory(
-            r"\\server\share\zed-jdtls",
+        assert!(is_absolute_directory("/tmp/intellij", Os::Linux));
+        assert!(!is_absolute_directory("tmp/intellij", Os::Linux));
+        assert!(is_absolute_directory(r"C:\Opt\zed-intellij", Os::Windows));
+        assert!(is_absolute_directory("C:/Opt/zed-intellij", Os::Windows));
+        assert!(is_absolute_directory(
+            r"\\server\share\zed-intellij",
             Os::Windows
         ));
-        assert!(!is_absolute_data_directory(r"Opt\zed-jdtls", Os::Windows));
+        assert!(!is_absolute_directory(r"Opt\zed-intellij", Os::Windows));
     }
 }

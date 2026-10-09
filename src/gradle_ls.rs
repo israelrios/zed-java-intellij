@@ -35,10 +35,6 @@ impl Downloadable for GradleLs {
         find_supported_installation(Path::new(INSTALL_PATH))
     }
 
-    fn loaded(&self) -> bool {
-        self.cached_path.is_some()
-    }
-
     fn fetch_latest_version(&self, _worktree: &Worktree) -> zed::Result<String> {
         Ok(SUPPORTED_VERSION.to_string())
     }
