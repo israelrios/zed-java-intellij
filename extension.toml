@@ -39,9 +39,3 @@ languages = ["Java", "Kotlin"]
 [language_servers.gradle-language-server]
 name = "Gradle Language Server"
 languages = ["Gradle", "Gradle KTS"]
-
-
-[[capabilities]]
-kind = "process:exec"
-command = "*"
-args = ["-version"]
