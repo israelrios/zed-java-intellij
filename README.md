@@ -39,7 +39,7 @@ Projects that use Maven, Gradle or Bazel are imported automatically. Open the Ze
 "lsp": {
   "intellij-server": {
     "settings": {
-      // Accept the JetBrains EAP agreement without being asked in Zed; see
+      // Accept the JetBrains agreement without being asked in Zed; see
       // Quick Start.
       "accept_eula": true,
 

@@ -73,7 +73,7 @@ import javax.tools.ToolProvider;
  *       them;
  *   <li>{@code zed.intellij.proxy.rewrite}: {@code false} to pass library URIs through;
  *   <li>{@code zed.intellij.proxy.agreement.hash}, {@code .file} and {@code .record}: when set,
- *       the server only starts once the user accepts the JetBrains EAP agreement in {@code .file},
+ *       the server only starts once the user accepts the JetBrains agreement in {@code .file},
  *       and the proxy then records {@code .hash}, the launcher's {@code --eula} value, in
  *       {@code .record};
  *   <li>{@code zed.intellij.proxy.source} and {@code zed.intellij.proxy.jar}: compiling the
@@ -98,10 +98,9 @@ public final class IntellijServerProxy {
     private static final String AGREEMENT_HASH_PROPERTY = "zed.intellij.proxy.agreement.hash";
     private static final String AGREEMENT_FILE_PROPERTY = "zed.intellij.proxy.agreement.file";
     private static final String AGREEMENT_RECORD_PROPERTY = "zed.intellij.proxy.agreement.record";
-    private static final String AGREEMENT_MESSAGE = "The IntelliJ language server is a JetBrains preview (EAP),"
-            + " covered by the JetBrains LSP Extension Public EAP Agreement. It starts once you accept the"
-            + " agreement.";
-    private static final String DECLINED_MESSAGE = "The JetBrains EAP agreement was not accepted. Restart the"
+    private static final String AGREEMENT_MESSAGE = "The IntelliJ language server is JetBrains software, covered"
+            + " by the JetBrains agreement that comes with it. It starts once you accept the agreement.";
+    private static final String DECLINED_MESSAGE = "The JetBrains agreement was not accepted. Restart the"
             + " language server to be asked again.";
     private static final String ACCEPT = "Accept";
     private static final String READ = "Read the Agreement";
@@ -250,7 +249,7 @@ public final class IntellijServerProxy {
     }
 
     /**
-     * Asks in Zed for the JetBrains EAP agreement to be accepted before the server starts. Zed's
+     * Asks in Zed for the JetBrains agreement to be accepted before the server starts. Zed's
      * {@code initialize} is held back meanwhile; a server may prompt before answering it. Returns
      * the messages held back once the agreement is accepted, which is recorded for the extension,
      * or {@code null} once it is declined, after failing {@code initialize}.

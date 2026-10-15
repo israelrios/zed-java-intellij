@@ -134,7 +134,7 @@ pub fn get_server_launcher(configuration: &Option<Value>, worktree: &Worktree) -
     configured_path(configuration, worktree, "/server_path")
 }
 
-/// Whether the user accepted the JetBrains EAP agreement, letting the extension
+/// Whether the user accepted the JetBrains agreement, letting the extension
 /// pass the bundled EULA hash to the launcher.
 pub fn is_eula_accepted(configuration: &Option<Value>) -> bool {
     configuration
