@@ -219,6 +219,34 @@ fn configured_path(
     }
 }
 
+fn configured_string<'a>(configuration: &'a Option<Value>, pointer: &str) -> Option<&'a str> {
+    configuration
+        .as_ref()?
+        .pointer(pointer)?
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+/// JetBrains license key text (an activation code), passed through
+/// `INTELLIJ_SERVER_LICENSE`.
+pub fn get_license_key(configuration: &Option<Value>) -> Option<String> {
+    configured_string(configuration, "/license_key").map(str::to_string)
+}
+
+/// File holding the license key text, passed through
+/// `INTELLIJ_SERVER_LICENSE_FILE`.
+pub fn get_license_key_file(configuration: &Option<Value>, worktree: &Worktree) -> Option<String> {
+    configured_string(configuration, "/license_key_file")?;
+    configured_path(configuration, worktree, "/license_key_file")
+}
+
+/// JetBrains License Server (floating license) URL, passed through
+/// `JETBRAINS_LICENSE_SERVER`.
+pub fn get_license_server(configuration: &Option<Value>) -> Option<String> {
+    configured_string(configuration, "/license_server").map(str::to_string)
+}
+
 /// Path to a local `gradle-lsp-bridge` binary, overriding the downloaded one.
 /// Primarily used to test a locally-built bridge.
 pub fn get_gradle_bridge_path(

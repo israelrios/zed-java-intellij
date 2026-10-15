@@ -5,13 +5,13 @@ A fork of the [Zed Java extension](https://github.com/zed-extensions/java) that 
 It keeps everything else from upstream: the Java, `.properties`, Gradle (Groovy) and Gradle Kotlin DSL grammars, the run/test tasks, and the Gradle Language Server for build files.
 
 > [!IMPORTANT]
-> The IntelliJ language server is a **JetBrains preview (EAP)**. It is not open source, and it is covered by the *JetBrains LSP Extension Public EAP Agreement*. Each preview build expires 30 days after release; the extension checks Open VSX for newer builds (see `check_updates`). JetBrains says that from the 1.0 release on, the server will require an IntelliJ IDEA Ultimate subscription.
+> The IntelliJ language server is not open source. Since its 1.0 release it needs a JetBrains license, such as an IntelliJ IDEA Ultimate subscription or a trial; see [Licensing](#licensing). Earlier preview (EAP) builds were covered by the *JetBrains LSP Extension Public EAP Agreement* and expired 30 days after release; the extension checks Open VSX for newer builds (see `check_updates`).
 
 ## Quick Start
 
 1. Install the extension as a dev extension (see [Developing Locally](#developing-locally)).
 2. Open a Java project. On first start, the extension downloads the server, which is about 400 MB and includes its own JetBrains Runtime, so no JDK is needed to run it.
-3. Zed then asks you to accept the JetBrains EAP agreement. Choose **Read the Agreement** to open the bundled `EULA.txt` in Zed, then **Accept** to start the server.
+3. Zed then asks you to accept the JetBrains agreement. Choose **Read the Agreement** to open the bundled `EULA.txt` in Zed, then **Accept** to start the server.
 
 Your answer is recorded for that version of the agreement, so Zed asks again only when a server update changes the agreement. If you choose **Decline** or dismiss the prompt, the server doesn't start; run `editor: restart language server` to be asked again. Answer within Zed's language server request timeout (2 minutes by default). If you take longer, Zed gives up on the server, and you need to restart it.
 
@@ -29,6 +29,8 @@ To accept without being asked, for example on a fresh machine, set `accept_eula`
 
 This accepts whichever agreement the downloaded build ships with, including later versions. Either way, the extension starts the server with `--eula <hash>`, where the hash is computed from the downloaded `EULA.txt`.
 
+4. Without a license, Zed then asks you to activate one; see [Licensing](#licensing).
+
 Projects that use Maven, Gradle or Bazel are imported automatically. Open the Zed project at the build root (where `pom.xml`, `settings.gradle` or `MODULE.bazel` is).
 
 ## Configuration
@@ -40,6 +42,16 @@ Projects that use Maven, Gradle or Bazel are imported automatically. Open the Ze
       // Accept the JetBrains EAP agreement without being asked in Zed; see
       // Quick Start.
       "accept_eula": true,
+
+      // A JetBrains license for the server; see "Licensing" below. Each one
+      // overrides the same INTELLIJ_SERVER_LICENSE / INTELLIJ_SERVER_LICENSE_FILE /
+      // JETBRAINS_LICENSE_SERVER variable from your shell.
+      // An activation code (license key text):
+      "license_key": "ABCD1234-...",
+      // ...or a file holding it; ~ is expanded:
+      "license_key_file": "~/.config/jetbrains/intellij-server.key",
+      // ...or a JetBrains License Server (floating licenses):
+      "license_server": "https://license.example.com",
 
       // Extra JVM options for the server, passed through IJ_JAVA_OPTIONS.
       // The server's own default heap is -Xmx2048m.
@@ -114,6 +126,31 @@ Updates happen the same way, when a language server starts and `check_updates` a
 - An install appears only once it is complete, so an interrupted download leaves nothing half-installed and is cleaned up on the next attempt.
 - If the download fails, the checksum doesn't match, or `server-bundle.json` has no checksum, the installed build keeps being used, and the update is retried after 24 hours. Only a first install, with no build to fall back on, goes ahead without a checksum.
 
+## Licensing
+
+From version 1.0, the server needs a JetBrains license. Without one it starts, but code insight (completion, navigation, diagnostics and so on) is paused until a license is activated.
+
+When that happens, Zed asks you to activate a license, and keeps the prompt open until you answer:
+
+- **Sign In with JetBrains Account** opens the JetBrains sign-in page in your browser. Once you sign in, the server uses a license from your account; if the account has a valid subscription that isn't in use yet, the first one is used.
+- **Start Free Trial** starts an anonymous trial.
+- **Other Options** opens this section, and asks again.
+- **Not Now** stops asking until the language server restarts (`editor: restart language server`).
+
+A license activated this way is kept for your user and machine, in `~/.config/JetBrains/IntelliJServer/intellij-server.key` on Linux. Zed tells you once the server reports the license as active; if code insight doesn't resume, run `editor: restart language server`.
+
+To use an activation code, a key file or a license server instead, set `license_key`, `license_key_file` or `license_server` (see [Configuration](#configuration)) and restart the language server. These are held in memory only, never stored, and a key set this way overrides any other license; if it isn't valid, Zed says so, and you need to fix or remove it. The same values can come from the `INTELLIJ_SERVER_LICENSE`, `INTELLIJ_SERVER_LICENSE_FILE` and `JETBRAINS_LICENSE_SERVER` environment variables.
+
+You can also manage the stored license from a terminal with the server's launcher, which lives in the extension's work directory under `intellij-server/<version>/intellij-server-*/bin/` (or is your `server_path`):
+
+```sh
+intellij-server license status
+intellij-server license login --code       # sign in with a pasted code, e.g. over SSH
+intellij-server license activate <code|key-file|license-server-url>
+intellij-server license trial
+intellij-server license reset
+```
+
 ## Kotlin
 
 The server also handles Kotlin. The "Kotlin" language itself comes from Zed's [Kotlin extension](https://github.com/zed-extensions/kotlin), so install it too, and make `intellij-server` its language server:
@@ -128,7 +165,7 @@ Kotlin files are only analyzed when the build sets them up as Kotlin sources: fo
 
 ## Library sources
 
-The server points into libraries with `jar:` and `jrt:` URIs, for example `jar:///…/lib/src.zip!/java.base/java/util/List.java`. Zed can't open those, so the extension runs the server behind a small proxy, [`proxy/LibrarySourcesProxy.java`](proxy/LibrarySourcesProxy.java):
+The server points into libraries with `jar:` and `jrt:` URIs, for example `jar:///…/lib/src.zip!/java.base/java/util/List.java`. Zed can't open those, so the extension runs the server behind a small proxy, [`proxy/IntellijServerProxy.java`](proxy/IntellijServerProxy.java):
 
 - When a server message names a library URI, the proxy asks the server for the file's text with its `decompile` command. It writes the text to a read-only file under `<system_directory>/intellij-server-library-sources/` and hands Zed that file instead. The file's path repeats the library URI, so Zed shows where it comes from: `jar:///usr/lib/jvm/jdk-21/lib/src.zip!/java.base/java/util/List.java` opens as `…/intellij-server-library-sources/<hash>/usr/lib/jvm/jdk-21/lib/src.zip!/java.base/java/util/List.java`.
 - When Zed refers to one of those files, the proxy swaps the original URI back in, so the server keeps treating it as a library file. Hover, go-to-definition and references work inside it as well.

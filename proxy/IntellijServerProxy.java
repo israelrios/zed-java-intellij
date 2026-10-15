@@ -19,10 +19,14 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.jar.Attributes;
 import java.util.jar.JarEntry;
@@ -33,7 +37,8 @@ import java.util.stream.Stream;
 import javax.tools.ToolProvider;
 
 /**
- * Sits between Zed and the IntelliJ language server so library sources can be opened.
+ * Sits between Zed and the IntelliJ language server, adding what Zed lacks: asking for the
+ * JetBrains agreement and for a license, opening library sources, and cleaning up caches.
  *
  * <p>The server points into libraries with {@code jar:} and {@code jrt:} URIs, which Zed can't
  * open. For every such URI in a server message, the proxy fetches the text with the server's
@@ -51,43 +56,48 @@ import javax.tools.ToolProvider;
  * that no longer exist or went unused for the retention period, along with library files nobody
  * opened in that time.
  *
+ * <p>It also stands in for the licensing UI of JetBrains' VS Code extension. It tells the server
+ * that the client has one, so the server reports its licensing state instead of a passing message,
+ * and while code insight is paused for want of a license, it keeps asking in Zed until the user
+ * signs in with a JetBrains Account, starts a trial, or turns the prompt down.
+ *
  * <p>Runs with the Java runtime bundled with the server as a single-file source program:
- * {@code java LibrarySourcesProxy.java <cache-dir> <server-command> [server-args...]}, configured
+ * {@code java IntellijServerProxy.java <cache-dir> <server-command> [server-args...]}, configured
  * through system properties:
  *
  * <ul>
- *   <li>{@code library.sources.proxy.project}: the project directory;
- *   <li>{@code library.sources.proxy.project.cache}: its IntelliJ system directory, which sits
+ *   <li>{@code zed.intellij.proxy.project}: the project directory;
+ *   <li>{@code zed.intellij.proxy.project.cache}: its IntelliJ system directory, which sits
  *       next to those of other projects;
- *   <li>{@code library.sources.proxy.retention.days}: days before unused caches go, 0 to keep
+ *   <li>{@code zed.intellij.proxy.retention.days}: days before unused caches go, 0 to keep
  *       them;
- *   <li>{@code library.sources.proxy.rewrite}: {@code false} to pass library URIs through;
- *   <li>{@code library.sources.proxy.agreement.hash}, {@code .file} and {@code .record}: when set,
+ *   <li>{@code zed.intellij.proxy.rewrite}: {@code false} to pass library URIs through;
+ *   <li>{@code zed.intellij.proxy.agreement.hash}, {@code .file} and {@code .record}: when set,
  *       the server only starts once the user accepts the JetBrains EAP agreement in {@code .file},
  *       and the proxy then records {@code .hash}, the launcher's {@code --eula} value, in
  *       {@code .record};
- *   <li>{@code library.sources.proxy.source} and {@code library.sources.proxy.jar}: compiling the
+ *   <li>{@code zed.intellij.proxy.source} and {@code zed.intellij.proxy.jar}: compiling the
  *       source costs about a second on each start, so when both are set, the first run also
  *       compiles itself into that jar, and later runs start from the jar instead.
  * </ul>
  */
-public final class LibrarySourcesProxy {
-    private static final String REQUEST_ID_PREFIX = "zed-library-sources-";
+public final class IntellijServerProxy {
+    private static final String REQUEST_ID_PREFIX = "zed-intellij-proxy-";
     private static final String URI_FILE = ".uri";
     /** Part of every library file's key; bumped when the files' layout changes. */
     private static final String LAYOUT = "2";
     private static final long EXIT_GRACE_SECONDS = 5;
     private static final long HOOK_GRACE_SECONDS = 2;
-    private static final String SOURCE_PROPERTY = "library.sources.proxy.source";
-    private static final String JAR_PROPERTY = "library.sources.proxy.jar";
+    private static final String SOURCE_PROPERTY = "zed.intellij.proxy.source";
+    private static final String JAR_PROPERTY = "zed.intellij.proxy.jar";
     private static final long MAX_WAIT_SECONDS = 5;
-    private static final String PROJECT_PROPERTY = "library.sources.proxy.project";
-    private static final String PROJECT_CACHE_PROPERTY = "library.sources.proxy.project.cache";
-    private static final String RETENTION_PROPERTY = "library.sources.proxy.retention.days";
-    private static final String REWRITE_PROPERTY = "library.sources.proxy.rewrite";
-    private static final String AGREEMENT_HASH_PROPERTY = "library.sources.proxy.agreement.hash";
-    private static final String AGREEMENT_FILE_PROPERTY = "library.sources.proxy.agreement.file";
-    private static final String AGREEMENT_RECORD_PROPERTY = "library.sources.proxy.agreement.record";
+    private static final String PROJECT_PROPERTY = "zed.intellij.proxy.project";
+    private static final String PROJECT_CACHE_PROPERTY = "zed.intellij.proxy.project.cache";
+    private static final String RETENTION_PROPERTY = "zed.intellij.proxy.retention.days";
+    private static final String REWRITE_PROPERTY = "zed.intellij.proxy.rewrite";
+    private static final String AGREEMENT_HASH_PROPERTY = "zed.intellij.proxy.agreement.hash";
+    private static final String AGREEMENT_FILE_PROPERTY = "zed.intellij.proxy.agreement.file";
+    private static final String AGREEMENT_RECORD_PROPERTY = "zed.intellij.proxy.agreement.record";
     private static final String AGREEMENT_MESSAGE = "The IntelliJ language server is a JetBrains preview (EAP),"
             + " covered by the JetBrains LSP Extension Public EAP Agreement. It starts once you accept the"
             + " agreement.";
@@ -96,6 +106,17 @@ public final class LibrarySourcesProxy {
     private static final String ACCEPT = "Accept";
     private static final String READ = "Read the Agreement";
     private static final String DECLINE = "Decline";
+    private static final String LICENSING_STATE = "jetbrains/licensing/state";
+    private static final String LICENSING_DOCS = "https://github.com/israelrios/zed-java-intellij#licensing";
+    /** Set when the license comes from the settings or the shell; it overrides any other. */
+    private static final List<String> LICENSE_ENV = List.of("INTELLIJ_SERVER_LICENSE", "INTELLIJ_SERVER_LICENSE_FILE");
+    private static final String SIGN_IN = "Sign In with JetBrains Account";
+    private static final String TRIAL = "Start Free Trial";
+    private static final String OTHER_OPTIONS = "Other Options";
+    private static final String NOT_NOW = "Not Now";
+    /** The server gives a browser sign-in five minutes. */
+    private static final long SIGN_IN_TIMEOUT_MINUTES = 6;
+    private static final long LICENSING_TIMEOUT_MINUTES = 1;
     /** Names the project a system directory belongs to; its modification time is the last use. */
     private static final String PROJECT_FILE = ".zed-project";
     private static final Pattern PROJECT_CACHE = Pattern.compile("intellij-server-[0-9a-f]{40}");
@@ -145,8 +166,22 @@ public final class LibrarySourcesProxy {
         thread.setDaemon(true);
         return thread;
     });
+    /** Asks for a license, which waits on the user, away from both pumps. */
+    private final ExecutorService licensing = Executors.newSingleThreadExecutor(runnable -> {
+        Thread thread = new Thread(runnable, "licensing");
+        thread.setDaemon(true);
+        return thread;
+    });
+    /** The server's last licensing state, and how many it has sent. */
+    private volatile Object licensingState;
+    private final AtomicLong licensingStates = new AtomicLong();
+    private final AtomicBoolean askingForLicense = new AtomicBoolean();
+    /** The user chose not to be asked again until the server restarts. */
+    private volatile boolean licensePromptDismissed;
+    /** Code insight was paused, so a license that becomes valid is worth announcing. */
+    private volatile boolean licenseMissing;
 
-    private LibrarySourcesProxy(
+    private IntellijServerProxy(
             Path cacheDir, String projectCache, boolean rewrite, OutputStream toClient, OutputStream toServer) {
         this.cacheDir = cacheDir;
         this.projectCache = projectCache == null ? "" : projectCache;
@@ -157,7 +192,7 @@ public final class LibrarySourcesProxy {
 
     public static void main(String[] args) throws Exception {
         if (args.length < 2) {
-            System.err.println("usage: LibrarySourcesProxy <cache-dir> <server-command> [args...]");
+            System.err.println("usage: IntellijServerProxy <cache-dir> <server-command> [args...]");
             System.exit(2);
         }
         Path cacheDir = Path.of(args[0]).toAbsolutePath().normalize();
@@ -183,7 +218,7 @@ public final class LibrarySourcesProxy {
                 .redirectError(ProcessBuilder.Redirect.INHERIT)
                 .start();
         for (byte[] message : heldMessages) {
-            write(server.getOutputStream(), new String(message, StandardCharsets.UTF_8));
+            write(server.getOutputStream(), withLicensingUi(new String(message, StandardCharsets.UTF_8)));
         }
         // On SIGTERM, close the server's input (which it answers by exiting) before going away,
         // rather than leaving it to notice the closed pipe on its own.
@@ -200,7 +235,7 @@ public final class LibrarySourcesProxy {
         if (systemDir != null) startHousekeeping(cacheDir, systemDir, project);
 
         boolean rewrite = !"false".equals(System.getProperty(REWRITE_PROPERTY));
-        var proxy = new LibrarySourcesProxy(cacheDir, projectCache, rewrite, System.out, server.getOutputStream());
+        var proxy = new IntellijServerProxy(cacheDir, projectCache, rewrite, System.out, server.getOutputStream());
         Thread fromServer = new Thread(() -> proxy.pumpFromServer(server.getInputStream()), "from-server");
         fromServer.setDaemon(true);
         fromServer.start();
@@ -285,7 +320,7 @@ public final class LibrarySourcesProxy {
         message.put("jsonrpc", "2.0");
         message.put("id", id);
         message.put("method", method);
-        message.put("params", params);
+        if (params != null) message.put("params", params);
         return message;
     }
 
@@ -306,6 +341,10 @@ public final class LibrarySourcesProxy {
             byte[] body;
             while ((body = readMessage(in)) != null) {
                 String text = new String(body, StandardCharsets.UTF_8);
+                if (text.contains(REQUEST_ID_PREFIX) && completeOwnRequest(Json.parse(text))) {
+                    continue;
+                }
+                text = withLicensingUi(text);
                 // Set before forwarding, so a server that stops right away isn't taken for a crash.
                 boolean isExit = text.contains("\"exit\"") && "exit".equals(field(Json.parse(text), "method"));
                 if (isExit) exiting = true;
@@ -319,7 +358,7 @@ public final class LibrarySourcesProxy {
                 if (isExit) break;
             }
         } catch (IOException | RuntimeException e) {
-            System.err.println("[library-sources] client stream failed: " + e);
+            System.err.println("[proxy] client stream failed: " + e);
         }
         try {
             toServer.close();
@@ -336,6 +375,13 @@ public final class LibrarySourcesProxy {
                 String text = new String(body, StandardCharsets.UTF_8);
                 if (text.contains(REQUEST_ID_PREFIX) && completeOwnRequest(Json.parse(text))) {
                     continue;
+                }
+                if (text.contains(LICENSING_STATE)) {
+                    Object message = Json.parse(text);
+                    if (LICENSING_STATE.equals(field(message, "method"))) {
+                        onLicensingState(field(message, "params"));
+                        continue;
+                    }
                 }
                 if (!rewrite || (!text.contains("\"jar:") && !text.contains("\"jrt:"))) {
                     write(toClient, text);
@@ -354,12 +400,12 @@ public final class LibrarySourcesProxy {
                             try {
                                 write(toClient, Json.write(toFileUris(message)));
                             } catch (IOException e) {
-                                System.err.println("[library-sources] failed to write to client: " + e);
+                                System.err.println("[proxy] failed to write to client: " + e);
                             }
                         });
             }
         } catch (IOException | RuntimeException e) {
-            System.err.println("[library-sources] server stream failed: " + e);
+            System.err.println("[proxy] server stream failed: " + e);
         }
         // After `exit`, the main thread stops the server and reports success.
         if (!exiting) System.exit(1);
@@ -393,6 +439,213 @@ public final class LibrarySourcesProxy {
             }
         });
         return future;
+    }
+
+    /** Sends a request to Zed; only called on the licensing thread. */
+    private CompletableFuture<Object> requestClient(String method, Object params) {
+        String id = REQUEST_ID_PREFIX + nextRequestId.incrementAndGet();
+        var future = new CompletableFuture<Object>();
+        pendingRequests.put(id, future);
+        try {
+            write(toClient, Json.write(request(id, method, params)));
+        } catch (IOException e) {
+            pendingRequests.remove(id);
+            future.completeExceptionally(e);
+        }
+        return future;
+    }
+
+    /**
+     * Adds the {@code licensingUi} client capability to Zed's {@code initialize}, so the server
+     * reports its licensing state to the proxy rather than showing a message that soon goes away.
+     */
+    @SuppressWarnings("unchecked")
+    static String withLicensingUi(String text) {
+        if (!text.contains("\"initialize\"")) return text;
+        Object message = Json.parse(text);
+        if (!"initialize".equals(field(message, "method"))
+                || !(field(message, "params") instanceof Map<?, ?> params)) {
+            return text;
+        }
+        var capabilities = (Map<String, Object>) ((Map<String, Object>) params)
+                .computeIfAbsent("capabilities", key -> new LinkedHashMap<String, Object>());
+        var experimental = (Map<String, Object>) capabilities
+                .computeIfAbsent("experimental", key -> new LinkedHashMap<String, Object>());
+        experimental.put("licensingUi", Boolean.TRUE);
+        return Json.write(message);
+    }
+
+    private void onLicensingState(Object state) {
+        licensingState = state;
+        licensingStates.incrementAndGet();
+        if (!Boolean.TRUE.equals(field(state, "featuresDeclined"))) {
+            if (licenseMissing && "Valid".equals(field(field(state, "activeLicense"), "status"))) {
+                licenseMissing = false;
+                showMessage(3, "JetBrains license activated (" + describeLicense(field(state, "activeLicense"))
+                        + "). Code insight is back.");
+            }
+            return;
+        }
+        licenseMissing = true;
+        startAskingForLicense();
+    }
+
+    private void startAskingForLicense() {
+        if (licensePromptDismissed || !askingForLicense.compareAndSet(false, true)) return;
+        licensing.execute(() -> {
+            long handled = licensingStates.get();
+            try {
+                handled = askForLicense();
+            } catch (RuntimeException e) {
+                System.err.println("[licensing] failed to ask for a license: " + e);
+            } finally {
+                askingForLicense.set(false);
+            }
+            // A state that came while finishing found the prompt still busy and started none.
+            if (licensingStates.get() != handled && Boolean.TRUE.equals(field(licensingState, "featuresDeclined"))) {
+                startAskingForLicense();
+            }
+        });
+    }
+
+    /**
+     * Asks in Zed for a license until the user picks a way to get one or turns the prompt down.
+     * The server's next state tells whether the license took; this only reports what went wrong.
+     * Returns the count of licensing states handled, as states that come while the server works
+     * on the user's choice are superseded by it.
+     */
+    private long askForLicense() {
+        String problem = null;
+        while (true) {
+            long handled = licensingStates.get();
+            if (!Boolean.TRUE.equals(field(licensingState, "featuresDeclined"))) return handled;
+            boolean fromEnvironment = LICENSE_ENV.stream().map(System::getenv)
+                    .anyMatch(value -> value != null && !value.isBlank());
+            String text = licensePrompt(licensingState, fromEnvironment) + (problem == null ? "" : " " + problem);
+            // Signing in or starting a trial would not override a license from the environment.
+            List<String> actions = fromEnvironment
+                    ? List.of(OTHER_OPTIONS, NOT_NOW)
+                    : List.of(SIGN_IN, TRIAL, OTHER_OPTIONS, NOT_NOW);
+            var prompt = new LinkedHashMap<String, Object>();
+            prompt.put("type", new Json.Number("2"));
+            prompt.put("message", text);
+            prompt.put("actions", actions.stream().map(title -> Map.of("title", title)).toList());
+            Object choice;
+            try {
+                choice = field(requestClient("window/showMessageRequest", prompt).join(), "title");
+            } catch (CompletionException e) {
+                System.err.println("[licensing] Zed couldn't show the license prompt: " + e.getCause());
+                return licensingStates.get();
+            }
+            problem = null;
+            try {
+                if (SIGN_IN.equals(choice)) {
+                    problem = signIn();
+                } else if (TRIAL.equals(choice)) {
+                    Object result = requestServer("jetbrains/licensing/trial/startAnonymous", null)
+                            .get(LICENSING_TIMEOUT_MINUTES, TimeUnit.MINUTES);
+                    if (!Boolean.TRUE.equals(field(result, "isSuccess"))) {
+                        problem = withDetail("Couldn't start the trial.", field(result, "errorMessage"));
+                    }
+                } else if (OTHER_OPTIONS.equals(choice)) {
+                    var show = new LinkedHashMap<String, Object>();
+                    show.put("uri", LICENSING_DOCS);
+                    show.put("external", Boolean.TRUE);
+                    try {
+                        requestClient("window/showDocument", show).join();
+                    } catch (CompletionException e) {
+                        problem = "Zed couldn't open " + LICENSING_DOCS + ".";
+                    }
+                    continue;
+                } else {
+                    // Not now, or the prompt was dismissed.
+                    licensePromptDismissed = true;
+                    return licensingStates.get();
+                }
+            } catch (ExecutionException | TimeoutException e) {
+                problem = withDetail("The language server didn't respond.", e.getMessage());
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return licensingStates.get();
+            }
+            // Done: the server announces the license; ask again only if something went wrong.
+            if (problem == null) return licensingStates.get();
+        }
+    }
+
+    /** Signs in with a JetBrains Account in the browser; returns what went wrong, if anything. */
+    private String signIn() throws ExecutionException, TimeoutException, InterruptedException {
+        Object result = requestServer("jetbrains/licensing/jba/login", null)
+                .get(SIGN_IN_TIMEOUT_MINUTES, TimeUnit.MINUTES);
+        Object status = field(result, "status");
+        if ("Licensed".equals(status)) return null;
+        if ("Canceled".equals(status)) return "The sign-in was canceled.";
+        if ("NoSuitableLicense".equals(status)) {
+            // Signed in, but no license is in use yet: use the first subscription that is valid. The
+            // state is fetched, as its notification may not have come yet.
+            Object state = requestServer("jetbrains/licensing/state/get", null)
+                    .get(LICENSING_TIMEOUT_MINUTES, TimeUnit.MINUTES);
+            Object subscriptions = field(field(state, "jbaLicensingState"), "availableSubscriptions");
+            if (subscriptions instanceof List<?> list) {
+                for (Object subscription : list) {
+                    if ("Valid".equals(field(subscription, "status"))
+                            && field(subscription, "assetId") instanceof String assetId) {
+                        requestServer("jetbrains/licensing/subscriptions/use", Map.of("assetId", assetId))
+                                .get(LICENSING_TIMEOUT_MINUTES, TimeUnit.MINUTES);
+                        return null;
+                    }
+                }
+            }
+            return "Your JetBrains Account has no license that covers the IntelliJ language server.";
+        }
+        if ("NoLicenses".equals(status)) {
+            return "No licenses available for activation were found in your JetBrains Account.";
+        }
+        return withDetail("Couldn't sign in with your JetBrains Account.", field(result, "errorMessage"));
+    }
+
+    static String licensePrompt(Object state, boolean fromEnvironment) {
+        String reason = switch (String.valueOf(field(state, "parkedReason"))) {
+            case "GraceExpired" -> "The JetBrains license grace period has ended.";
+            case "LicenseRemoved" -> "The JetBrains license was removed.";
+            case "LicenseRevoked" -> "The JetBrains license was revoked.";
+            default -> fromEnvironment ? "The configured JetBrains license isn't valid." : "No JetBrains license is active.";
+        };
+        String text = reason + " Code insight is paused until a license is activated.";
+        if (fromEnvironment) {
+            text += " The license comes from the license_key or license_key_file setting (or the"
+                    + " INTELLIJ_SERVER_LICENSE variables), which overrides any other; fix or remove it and"
+                    + " restart the language server.";
+        }
+        return text;
+    }
+
+    private static String describeLicense(Object license) {
+        String product = field(license, "product") instanceof String s ? s : "IntelliJ";
+        return switch (String.valueOf(field(license, "source"))) {
+            case "trial" -> product + " trial";
+            case "licenseServer" -> product + " from " + field(license, "serverAddress");
+            default -> field(license, "licensedTo") instanceof String to ? product + ", licensed to " + to : product;
+        };
+    }
+
+    private static String withDetail(String text, Object detail) {
+        return detail instanceof String s && !s.isBlank() ? text + " " + s.strip() : text;
+    }
+
+    private void showMessage(int type, String text) {
+        var params = new LinkedHashMap<String, Object>();
+        params.put("type", new Json.Number(String.valueOf(type)));
+        params.put("message", text);
+        var message = new LinkedHashMap<String, Object>();
+        message.put("jsonrpc", "2.0");
+        message.put("method", "window/showMessage");
+        message.put("params", params);
+        try {
+            write(toClient, Json.write(message));
+        } catch (IOException e) {
+            System.err.println("[licensing] failed to write to client: " + e);
+        }
     }
 
     /**
@@ -560,7 +813,7 @@ public final class LibrarySourcesProxy {
                     pruneLibraryFiles(librarySources, cutoff);
                 }
             } catch (IOException | RuntimeException e) {
-                System.err.println("[library-sources] cache cleanup failed: " + e);
+                System.err.println("[caches] cleanup failed: " + e);
             }
         });
     }
@@ -570,7 +823,7 @@ public final class LibrarySourcesProxy {
             Files.createDirectories(systemDir);
             Files.writeString(systemDir.resolve(PROJECT_FILE), project);
         } catch (IOException | RuntimeException e) {
-            System.err.println("[library-sources] could not mark " + systemDir + " in use: " + e);
+            System.err.println("[caches] could not mark " + systemDir + " in use: " + e);
         }
     }
 
@@ -608,7 +861,7 @@ public final class LibrarySourcesProxy {
                 }
                 continue;
             }
-            System.err.println("[library-sources] deleting " + dir + ": " + reason);
+            System.err.println("[caches] deleting " + dir + ": " + reason);
             deleteTree(doomed);
         }
     }
@@ -667,7 +920,7 @@ public final class LibrarySourcesProxy {
                 path.toFile().setWritable(true);
                 Files.deleteIfExists(path);
             } catch (IOException e) {
-                System.err.println("[library-sources] could not delete " + path + ": " + e);
+                System.err.println("[caches] could not delete " + path + ": " + e);
             }
         }
     }
@@ -688,7 +941,7 @@ public final class LibrarySourcesProxy {
             try {
                 compileSelf(Path.of(source), Path.of(jar));
             } catch (IOException | RuntimeException e) {
-                System.err.println("[library-sources] could not compile the proxy for faster starts: " + e);
+                System.err.println("[proxy] could not compile the proxy for faster starts: " + e);
             }
         }, "compile-self");
         thread.setDaemon(true);
@@ -711,7 +964,7 @@ public final class LibrarySourcesProxy {
             }
             var manifest = new Manifest();
             manifest.getMainAttributes().put(Attributes.Name.MANIFEST_VERSION, "1.0");
-            manifest.getMainAttributes().put(Attributes.Name.MAIN_CLASS, LibrarySourcesProxy.class.getName());
+            manifest.getMainAttributes().put(Attributes.Name.MAIN_CLASS, IntellijServerProxy.class.getName());
             try (var out = new JarOutputStream(Files.newOutputStream(tempJar), manifest);
                     Stream<Path> files = Files.walk(classes)) {
                 for (Path file : files.filter(Files::isRegularFile).toList()) {

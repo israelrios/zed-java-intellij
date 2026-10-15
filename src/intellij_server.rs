@@ -14,7 +14,8 @@ use zed_extension_api::{
 
 use crate::{
     config::{
-        get_cache_retention_days, get_data_sharing, get_jvm_args, get_region, is_eula_accepted,
+        get_cache_retention_days, get_data_sharing, get_jvm_args, get_license_key,
+        get_license_key_file, get_license_server, get_region, is_eula_accepted,
         is_library_sources_enabled,
     },
     intellij::{IntellijServer as Bundle, eula_hash, get_system_path, server_home},
@@ -29,24 +30,29 @@ const JVM_OPTIONS_ENV: &str = "IJ_JAVA_OPTIONS";
 const LAUNCHER_DEBUG_ENV: &str = "IJ_LAUNCHER_DEBUG";
 const DATA_SHARING_ENV: &str = "INTELLIJ_DATA_SHARING";
 const REGION_ENV: &str = "INTELLIJ_REGION";
+const LICENSE_KEY_ENV: &str = "INTELLIJ_SERVER_LICENSE";
+const LICENSE_KEY_FILE_ENV: &str = "INTELLIJ_SERVER_LICENSE_FILE";
+const LICENSE_SERVER_ENV: &str = "JETBRAINS_LICENSE_SERVER";
 
-const PROXY_SOURCE: &str = include_str!("../proxy/LibrarySourcesProxy.java");
-const PROXY_DIR: &str = "library-sources-proxy";
-const PROXY_SOURCE_FILE: &str = "LibrarySourcesProxy.java";
-const PROXY_MAIN_CLASS: &str = "LibrarySourcesProxy";
-/// Compiled by the proxy itself on its first run; see `LibrarySourcesProxy`.
+const PROXY_SOURCE: &str = include_str!("../proxy/IntellijServerProxy.java");
+const PROXY_DIR: &str = "intellij-server-proxy";
+/// Where the proxy lived while it was named `LibrarySourcesProxy`.
+const OLD_PROXY_DIR: &str = "library-sources-proxy";
+const PROXY_SOURCE_FILE: &str = "IntellijServerProxy.java";
+const PROXY_MAIN_CLASS: &str = "IntellijServerProxy";
+/// Compiled by the proxy itself on its first run; see `IntellijServerProxy`.
 const PROXY_JAR_FILE: &str = "proxy.jar";
 /// Library files the proxy writes, shared by all projects, next to their
 /// system paths.
 const LIBRARY_SOURCES_DIR: &str = "intellij-server-library-sources";
-/// System properties configuring the proxy; see `LibrarySourcesProxy`.
-const PROJECT_PROPERTY: &str = "library.sources.proxy.project";
-const PROJECT_CACHE_PROPERTY: &str = "library.sources.proxy.project.cache";
-const RETENTION_PROPERTY: &str = "library.sources.proxy.retention.days";
-const REWRITE_PROPERTY: &str = "library.sources.proxy.rewrite";
-const AGREEMENT_HASH_PROPERTY: &str = "library.sources.proxy.agreement.hash";
-const AGREEMENT_FILE_PROPERTY: &str = "library.sources.proxy.agreement.file";
-const AGREEMENT_RECORD_PROPERTY: &str = "library.sources.proxy.agreement.record";
+/// System properties configuring the proxy; see `IntellijServerProxy`.
+const PROJECT_PROPERTY: &str = "zed.intellij.proxy.project";
+const PROJECT_CACHE_PROPERTY: &str = "zed.intellij.proxy.project.cache";
+const RETENTION_PROPERTY: &str = "zed.intellij.proxy.retention.days";
+const REWRITE_PROPERTY: &str = "zed.intellij.proxy.rewrite";
+const AGREEMENT_HASH_PROPERTY: &str = "zed.intellij.proxy.agreement.hash";
+const AGREEMENT_FILE_PROPERTY: &str = "zed.intellij.proxy.agreement.file";
+const AGREEMENT_RECORD_PROPERTY: &str = "zed.intellij.proxy.agreement.record";
 const EULA_FILE: &str = "EULA.txt";
 /// The `--eula` hash of the agreement the user accepted in Zed, written by
 /// the proxy.
@@ -144,6 +150,20 @@ impl LanguageServer for IntellijServer {
         }
         if let Some(region) = get_region(&configuration) {
             env.push((REGION_ENV.to_string(), region));
+        }
+        // A license from the settings replaces one from the shell.
+        for (key, value) in [
+            (LICENSE_KEY_ENV, get_license_key(&configuration)),
+            (
+                LICENSE_KEY_FILE_ENV,
+                get_license_key_file(&configuration, worktree),
+            ),
+            (LICENSE_SERVER_ENV, get_license_server(&configuration)),
+        ] {
+            if let Some(value) = value {
+                env.retain(|(existing, _)| existing != key);
+                env.push((key.to_string(), value));
+            }
         }
 
         // Zed spawns the server from the worktree, so a path relative to the
@@ -270,12 +290,13 @@ fn proxy_launch_args(current_dir: &Path, launcher: &Path) -> zed::Result<Vec<Str
         fs::write(&source, PROXY_SOURCE)
             .map_err(|err| format!("Failed to write {}: {err}", source.display()))?;
         let _ = remove_all_directories_except(PROXY_DIR, &version);
+        let _ = fs::remove_dir_all(OLD_PROXY_DIR);
     }
     let source = path_to_string(current_dir.join(&source))?;
     args.extend([
-        format!("-Dlibrary.sources.proxy.source={source}"),
+        format!("-Dzed.intellij.proxy.source={source}"),
         format!(
-            "-Dlibrary.sources.proxy.jar={}",
+            "-Dzed.intellij.proxy.jar={}",
             path_to_string(current_dir.join(&jar))?
         ),
         source,
