@@ -71,7 +71,7 @@
   },
   {
     "label": "Clear default IntelliJ server cache",
-    "command": "cache_dir=\"\"; if [ -n \"$XDG_CACHE_HOME\" ]; then cache_dir=\"$XDG_CACHE_HOME\"; elif [ \"$(uname)\" = \"Darwin\" ]; then cache_dir=\"$HOME/Library/Caches\"; else cache_dir=\"$HOME/.cache\"; fi; found=$(find \"$cache_dir\" -maxdepth 1 -type d -name 'intellij-server-*' 2>/dev/null); if [ -n \"$found\" ]; then echo \"$found\" | xargs rm -rf && echo 'Default IntelliJ server cache cleared. Restart the language server'; else echo 'No default IntelliJ server cache found'; fi; echo 'If system_directory is configured, delete its intellij-server-* directories manually.'",
+    "command": "if [ \"$(uname)\" = \"Darwin\" ]; then data_dir=\"$HOME/Library/Application Support/Zed\"; elif [ -n \"$FLATPAK_XDG_DATA_HOME\" ]; then data_dir=\"$FLATPAK_XDG_DATA_HOME/zed\"; elif [ -n \"$XDG_DATA_HOME\" ]; then data_dir=\"$XDG_DATA_HOME/zed\"; else data_dir=\"$HOME/.local/share/zed\"; fi; cache_dir=\"$data_dir/extensions/work/java-intellij/caches\"; found=$(find \"$cache_dir\" -mindepth 1 -maxdepth 1 -type d -name 'intellij-server-*' -print -quit 2>/dev/null); if [ -n \"$found\" ]; then if find \"$cache_dir\" -mindepth 1 -maxdepth 1 -type d -name 'intellij-server-*' -exec rm -rf -- {} +; then echo 'Default IntelliJ server cache cleared. Restart the language server'; else echo \"Some caches in $cache_dir could not be deleted\"; fi; else echo \"No default IntelliJ server cache found in $cache_dir\"; fi; echo 'If system_directory is configured, delete its intellij-server-* directories manually.'",
     "use_new_terminal": false,
     "reveal": "always",
     "tags": [

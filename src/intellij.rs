@@ -35,6 +35,13 @@ const PARTIAL_SUFFIX: &str = ".partial";
 /// `<version>@<unix seconds>` of the last failed install.
 const FAILED_UPDATE_FILE: &str = "failed-update";
 const RETRY_AFTER_SECONDS: u64 = 24 * 60 * 60;
+/// Default parent of the per-worktree caches, relative to the work directory.
+const DEFAULT_CACHE_DIR: &str = "caches";
+const CACHEDIR_TAG_FILE: &str = "CACHEDIR.TAG";
+/// See <https://bford.info/cachedir/>.
+const CACHEDIR_TAG: &str = "Signature: 8a477f597d28d172789f06886806bc55\n\
+# This file is a cache directory tag created by the Zed Java (IntelliJ) extension.\n\
+# For information about cache directory tags see https://bford.info/cachedir/\n";
 
 /// The `server-bundle.json` shipped inside the JetBrains VS Code extension. It
 /// pins the platform-specific language server archive the extension runs.
@@ -474,31 +481,25 @@ pub fn eula_hash(launcher: &Path) -> zed::Result<String> {
 pub fn get_system_path(configuration: &Option<Value>, worktree: &Worktree) -> zed::Result<PathBuf> {
     let base_directory = match get_system_directory(configuration, worktree)? {
         Some(directory) => PathBuf::from(directory),
-        None => default_cache_directory(worktree)?,
+        None => default_cache_directory()?,
     };
     Ok(build_system_path(&base_directory, &worktree.root_path()))
 }
 
-fn default_cache_directory(worktree: &Worktree) -> zed::Result<PathBuf> {
-    let env = worktree.shell_env();
-    let var = |name: &str| {
-        env.iter()
-            .find(|(key, value)| key == name && !value.is_empty())
-            .map(|(_, value)| PathBuf::from(value))
-    };
-    match current_platform().0 {
-        Os::Mac => {
-            var("XDG_CACHE_HOME").or_else(|| var("HOME").map(|home| home.join("Library/Caches")))
-        }
-        Os::Linux => var("XDG_CACHE_HOME").or_else(|| var("HOME").map(|home| home.join(".cache"))),
-        Os::Windows => var("LOCALAPPDATA").or_else(|| var("APPDATA")),
+/// The cache parent used when `system_directory` is not set: a directory in
+/// the extension's work directory, the only place Zed lets an extension write.
+/// It is tagged as a cache so backup tools that honour `CACHEDIR.TAG` skip it.
+fn default_cache_directory() -> zed::Result<PathBuf> {
+    create_path_if_not_exists(DEFAULT_CACHE_DIR)?;
+    let tag = Path::new(DEFAULT_CACHE_DIR).join(CACHEDIR_TAG_FILE);
+    if !tag.is_file() {
+        // Only a hint for backup tools; the cache works without it.
+        let _ = fs::write(&tag, CACHEDIR_TAG);
     }
-    .map(Ok)
-    .unwrap_or_else(|| {
-        std::env::current_dir()
-            .map(|path| path.join("caches"))
-            .map_err(|err| format!("Failed to get current directory: {err}"))
-    })
+    // The server runs outside the sandbox, so it needs the absolute path.
+    std::env::current_dir()
+        .map(|path| path.join(DEFAULT_CACHE_DIR))
+        .map_err(|err| format!("Failed to get current directory: {err}"))
 }
 
 fn build_system_path(base_directory: &Path, cache_key: &str) -> PathBuf {

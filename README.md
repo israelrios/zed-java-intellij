@@ -59,8 +59,8 @@ Projects that use Maven, Gradle or Bazel are imported automatically. Open the Ze
 
       // Parent directory for IntelliJ caches and indexes. The extension adds an
       // intellij-server-<worktree-hash> directory for each worktree. Must be an
-      // absolute path. Default: $XDG_CACHE_HOME or ~/.cache (Linux),
-      // ~/Library/Caches (macOS), %LOCALAPPDATA% (Windows). See "Caches" below.
+      // absolute path. Default: the caches/ directory in the extension's work
+      // directory. See "Caches" below.
       "system_directory": "/path/to/intellij-caches",
 
       // Days before an unused project cache or library file is deleted; 0 keeps
@@ -183,7 +183,9 @@ The server keeps its indexes in a directory per project, a few hundred MB each, 
 | `intellij-server-<hash>/` | Caches and indexes for one project; `<hash>` is the SHA-1 of the project path. |
 | `intellij-server-library-sources/` | Library files opened through go-to-definition, shared by all projects. |
 
-`system_directory` defaults to `~/.cache` on Linux (or `$XDG_CACHE_HOME`), `~/Library/Caches` on macOS and `%LOCALAPPDATA%` on Windows.
+`system_directory` defaults to `caches/` in Zed's extension work directory (see below), because Zed lets an extension write only there. The caches go away when you uninstall the extension, and survive extension updates. The directory holds a [`CACHEDIR.TAG`](https://bford.info/cachedir/), so backup tools that honour it (borg `--exclude-caches`, restic `--exclude-caches`, `tar --exclude-caches`) skip it. Time Machine does not; exclude the folder in its settings, or set `system_directory` to a folder under `~/Library/Caches`.
+
+Earlier versions kept the caches in `~/.cache` on Linux (or `$XDG_CACHE_HOME`), `~/Library/Caches` on macOS and `%LOCALAPPDATA%` on Windows. The extension no longer touches those folders, so projects are indexed again once after updating, and you can delete the old `intellij-server-*` directories there yourself.
 
 Each time a server starts, the proxy deletes, in the background:
 
@@ -191,7 +193,7 @@ Each time a server starts, the proxy deletes, in the background:
 - caches of projects not opened for `cache_retention_days` (90 by default);
 - library files nobody opened in that time.
 
-Each project cache records its project path and last use in a `.zed-project` file. Set `cache_retention_days` to `0` to keep everything. The **Clear default IntelliJ server cache** task removes all caches at once.
+Each project cache records its project path and last use in a `.zed-project` file. Set `cache_retention_days` to `0` to keep everything. The **Clear default IntelliJ server cache** task removes all caches in the default location at once (Linux and macOS, with Zed's default data directory).
 
 The server download itself, about 1 GB unpacked, lives in Zed's extension work directory: `~/.local/share/zed/extensions/work/java-intellij/` on Linux, `~/Library/Application Support/Zed/extensions/work/java-intellij/` on macOS and `%LOCALAPPDATA%\Zed\extensions\work\java-intellij\` on Windows.
 
