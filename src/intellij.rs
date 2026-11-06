@@ -152,6 +152,8 @@ impl Downloadable for IntellijServer {
         language_server_id: &LanguageServerId,
         _worktree: &Worktree,
     ) -> zed::Result<PathBuf> {
+        // Zed serializes calls to this extension across windows in one process,
+        // so the next start reuses the installation completed by the previous one.
         let install_path = Path::new(INSTALL_PATH).join(version);
         if let Some(launcher) = find_launcher(&install_path) {
             return Ok(launcher);
